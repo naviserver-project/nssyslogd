@@ -16,23 +16,23 @@ proc syslog::init {} {
 }
 
 # Syslog handler
-proc syslog::server { ipaddr severity facility args } {
+proc syslog::server { ipaddr severity facility line } {
 
     switch -glob -- $facility.$severity {
      mail.* {
-        ns_syslogd write mailog $args
+        ns_syslogd write mailog $line
         return 1
      }
 
      auth.* -
      security.* -
      audit.* {
-        ns_syslogd write authlog $args
+        ns_syslogd write authlog $line
         return 1
      }
 
      daemon.* {
-        ns_syslogd write syslog $args
+        ns_syslogd write syslog $line
         return 1
      }
     }

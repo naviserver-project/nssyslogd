@@ -314,7 +314,7 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
     if (server->proc) {
         Tcl_Interp *interp = Ns_TclAllocateInterp(server->name);
         if (interp) {
-            Ns_DStringPrintf(&server->buffer, "%s %s %s %s %s", server->proc, ns_inet_ntoa(sa.sin_addr), sSeverity, sFacility, ptr);
+            Ns_DStringPrintf(&server->buffer, "%s %s %s %s {%s}", server->proc, ns_inet_ntoa(sa.sin_addr), sSeverity, sFacility, ptr);
             Tcl_ResetResult(interp);
             rc = Tcl_Eval(interp, server->buffer.string);
             if (rc != TCL_OK) {
