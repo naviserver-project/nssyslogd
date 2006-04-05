@@ -314,16 +314,17 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
     if (server->proc) {
         Tcl_Interp *interp = Ns_TclAllocateInterp(server->name);
         if (interp) {
-            Ns_DStringPrintf(&server->buffer, "%s %s %s %s {%s}", server->proc, ns_inet_ntoa(sa.sin_addr), sSeverity, sFacility, ptr);
-            Tcl_ResetResult(interp);
-            rc = Tcl_Eval(interp, server->buffer.string);
+            rc = Tcl_VarEval(interp, server->proc, " ", ns_inet_ntoa(sa.sin_addr), " ", sSeverity, " ", sFacility, " {", ptr, "}", NULL);
             if (rc != TCL_OK) {
                 Ns_TclLogError(interp);
             } else {
                 res = (char*)Tcl_GetStringResult(interp);
+                if (res && *res) {
+                    rc = TCL_ERROR;
+                }
             }
             Ns_TclDeAllocateInterp(interp);
-            if (res && *res) {
+            if (rc != TCL_OK) {
                 return NS_TRUE;
             }
         }
