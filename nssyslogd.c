@@ -54,96 +54,98 @@
 #include <netinet/ip_icmp.h>
 
 typedef struct _syslogFile {
-   struct _syslogFile *nextPtr;
-   char *name;
-   char *file;
-   char *rollfmt;
-   int fd;
-   int maxbackup;
-   int maxlines;
-   int curlines;
-   unsigned long writtenlines;
-   Ns_Mutex lock;
-   Ns_DString buffer;
+    struct _syslogFile *nextPtr;
+    char *name;
+    char *file;
+    char *rollfmt;
+    int fd;
+    int maxbackup;
+    int maxlines;
+    int curlines;
+    unsigned long writtenlines;
+    Ns_Mutex lock;
+    Ns_DString buffer;
 } SyslogFile;
 
 typedef struct _server {
-   char *name;
-   char *proc;
-   char *path;
-   char *address;
-   int port;
-   int rollhour;
-   int udp_sock;
-   int unix_sock;
-   short errors;
-   Ns_Mutex mutex;
-   Ns_DString buffer;
-   SyslogFile *files;
-   int opened;
-   int facility;
-   int options;
-   char ident[32];
+    char *name;
+    char *proc;
+    char *path;
+    char *address;
+    int port;
+    int rollhour;
+    int udp_sock;
+    int unix_sock;
+    short errors;
+    Ns_Mutex mutex;
+    Ns_DString buffer;
+    SyslogFile *files;
+    int opened;
+    int facility;
+    int options;
+    char ident[32];
 } Server;
 
 static struct {
-   int type;
-   char *name;
+    int type;
+    char *name;
 } SyslogFacilities[] = {
-   { 0, "kern" },
-   { 1, "user" },
-   { 2, "mail" },
-   { 3, "daemon" },
-   { 4, "auth" },
-   { 5, "intern" },
-   { 6, "print" },
-   { 7, "news" },
-   { 8, "uucp" },
-   { 9, "clock" },
-   { 10,"security" },
-   { 11,"ftp" },
-   { 12,"ntp" },
-   { 13,"audit" },
-   { 14,"alert" },
-   { 15,"clock" },
-   { 16,"local0" },
-   { 17,"local1" },
-   { 18,"local2" },
-   { 19,"local3" },
-   { 20,"local4" },
-   { 21,"local5" },
-   { 22,"local6" },
-   { 23,"local7" },
-   { 0, 0}
+    {
+    0, "kern"}, {
+    1, "user"}, {
+    2, "mail"}, {
+    3, "daemon"}, {
+    4, "auth"}, {
+    5, "intern"}, {
+    6, "print"}, {
+    7, "news"}, {
+    8, "uucp"}, {
+    9, "clock"}, {
+    10, "security"}, {
+    11, "ftp"}, {
+    12, "ntp"}, {
+    13, "audit"}, {
+    14, "alert"}, {
+    15, "clock"}, {
+    16, "local0"}, {
+    17, "local1"}, {
+    18, "local2"}, {
+    19, "local3"}, {
+    20, "local4"}, {
+    21, "local5"}, {
+    22, "local6"}, {
+    23, "local7"}, {
+    0, 0}
 };
 
 static struct {
-   int type;
-   char *name;
+    int type;
+    char *name;
 } SyslogSeverities[] = {
-   { 0, "emergency" },
-   { 1, "alert" },
-   { 2, "critical" },
-   { 3, "error" },
-   { 4, "warning" },
-   { 5, "notice" },
-   { 6, "info" },
-   { 7, "debug" },
-   { 0 ,0 }
+    {
+    0, "emergency"}, {
+    1, "alert"}, {
+    2, "critical"}, {
+    3, "error"}, {
+    4, "warning"}, {
+    5, "notice"}, {
+    6, "info"}, {
+    7, "debug"}, {
+    0, 0}
 };
 
 static Ns_SockProc SyslogProc;
-static int SyslogInterpInit(Tcl_Interp *interp, void *arg);
-static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
-static SyslogFile *SyslogFind(Server *srvPtr, const char *name);
-static int SyslogOpen(SyslogFile *logPtr);
-static int SyslogClose(SyslogFile *logPtr);
-static int SyslogFlush(SyslogFile *logPtr,Ns_DString *dsPtr);
-static int SyslogRoll(SyslogFile *logPtr);
-static void SyslogWrite(SyslogFile *logPtr, char *str);
-static void SyslogFree(SyslogFile *logPtr);
-static void SyslogCallback(int(proc)(SyslogFile *), void *arg, char *desc);
-static void SyslogCloseCallback(Ns_Time *toPtr, void *arg);
+static int SyslogInterpInit(Tcl_Interp * interp, void *arg);
+static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[]);
+static SyslogFile *SyslogFind(Server * srvPtr, const char *name);
+static int SyslogOpen(SyslogFile * logPtr);
+static int SyslogClose(SyslogFile * logPtr);
+static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr);
+static int SyslogRoll(SyslogFile * logPtr);
+static void SyslogWrite(SyslogFile * logPtr, char *str);
+static void SyslogFree(SyslogFile * logPtr);
+static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc);
+static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
 static void SyslogRollCallback(void *arg);
 
 NS_EXPORT int Ns_ModuleVersion = 1;
@@ -172,7 +174,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     Server *srvPtr;
 
     path = Ns_ConfigGetPath(server, module, NULL);
-    srvPtr = (Server*)ns_calloc(1,sizeof(Server));
+    srvPtr = (Server *) ns_calloc(1, sizeof(Server));
     srvPtr->name = server;
 
     srvPtr->proc = Ns_ConfigGetValue(path, "proc");
@@ -188,23 +190,24 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     /* Configure Syslog listener */
     if (srvPtr->address) {
         if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port)) == -1) {
-            Ns_Log(Error,"nssyslogd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
+            Ns_Log(Error, "nssyslogd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
         } else {
             srvPtr->udp_sock = sock;
-            Ns_SockCallback(sock, SyslogProc, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
-            Ns_Log(Notice,"nssyslogd: listening on %s:%d %s", srvPtr->address, srvPtr->port, srvPtr->proc?srvPtr->proc:"");
+            Ns_SockCallback(sock, SyslogProc, srvPtr, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
+            Ns_Log(Notice, "nssyslogd: listening on %s:%d %s", srvPtr->address, srvPtr->port,
+                   srvPtr->proc ? srvPtr->proc : "");
         }
     }
     if ((sock = Ns_SockListenUnix(srvPtr->path, 0, 0666)) == -1) {
-        Ns_Log(Error,"nssyslogd: couldn't create socket: %s: %s", srvPtr->path, strerror(errno));
+        Ns_Log(Error, "nssyslogd: couldn't create socket: %s: %s", srvPtr->path, strerror(errno));
     } else {
         srvPtr->unix_sock = sock;
-        Ns_SockCallback(sock, SyslogProc, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
-        Ns_Log(Notice,"nssyslogd: listening on %s %s", srvPtr->path, srvPtr->proc?srvPtr->proc:"");
+        Ns_SockCallback(sock, SyslogProc, srvPtr, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
+        Ns_Log(Notice, "nssyslogd: listening on %s %s", srvPtr->path, srvPtr->proc ? srvPtr->proc : "");
     }
     Ns_DStringInit(&srvPtr->buffer);
     Ns_RegisterAtShutdown(SyslogCloseCallback, srvPtr);
-    Ns_ScheduleDaily((Ns_SchedProc *)SyslogRollCallback, srvPtr, 0, srvPtr->rollhour, 0, NULL);
+    Ns_ScheduleDaily((Ns_SchedProc *) SyslogRollCallback, srvPtr, 0, srvPtr->rollhour, 0, NULL);
     Ns_TclRegisterTrace(server, SyslogInterpInit, srvPtr, NS_TCL_TRACE_CREATE);
     return NS_OK;
 }
@@ -224,7 +227,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
  *
  *----------------------------------------------------------------------
  */
-static int SyslogInterpInit(Tcl_Interp *interp, void *arg)
+static int SyslogInterpInit(Tcl_Interp * interp, void *arg)
 {
     Tcl_CreateObjCommand(interp, "ns_syslogd", SyslogCmd, arg, NULL);
     return NS_OK;
@@ -249,7 +252,7 @@ static int SyslogInterpInit(Tcl_Interp *interp, void *arg)
 static int SyslogProc(SOCKET sock, void *arg, int why)
 {
     struct sockaddr_in sa;
-    Server *server = (Server*)arg;
+    Server *server = (Server *) arg;
     int i, rc, len, priority = -1, iFacility = 0, iSeverity = 0;
     char buf[1024], *ptr, *res = 0, *sFacility = "none", *sSeverity = "none";
     socklen_t salen = sizeof(struct sockaddr_in);
@@ -260,20 +263,20 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
     }
 
     if (sock == server->udp_sock) {
-        if ((len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&sa, &salen)) <= 0) {
+        if ((len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr *) &sa, &salen)) <= 0) {
             if (server->errors >= 0 && server->errors++ < 10) {
                 Ns_Log(Error, "SyslogProc: %d: recvfrom error: %s", sock, strerror(errno));
             }
             return NS_TRUE;
         }
     } else {
-       if ((len = recv(sock, buf, sizeof(buf) - 1, 0)) <= 0) {
-           if (server->errors >= 0 && server->errors++ < 10) {
-               Ns_Log(Error, "SyslogProc: %d: recv error: %s", sock, strerror(errno));
-           }
-           return NS_TRUE;
-       }
-       sa.sin_addr.s_addr = inet_addr("127.0.0.1");
+        if ((len = recv(sock, buf, sizeof(buf) - 1, 0)) <= 0) {
+            if (server->errors >= 0 && server->errors++ < 10) {
+                Ns_Log(Error, "SyslogProc: %d: recv error: %s", sock, strerror(errno));
+            }
+            return NS_TRUE;
+        }
+        sa.sin_addr.s_addr = inet_addr("127.0.0.1");
     }
     buf[len] = 0;
     ptr = buf;
@@ -291,14 +294,14 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
     iFacility = priority / 8;
     iSeverity = priority - iFacility * 8;
     /* Parse timestamp: Mon dd hh:mm:ss */
-    while (*ptr && !isspace(*ptr++)) ;
-    while (*ptr && !isspace(*ptr++)) ;
-    while (*ptr && !isspace(*ptr++)) ;
+    while (*ptr && !isspace(*ptr++));
+    while (*ptr && !isspace(*ptr++));
+    while (*ptr && !isspace(*ptr++));
     /* Bad line, ignore it */
     if (!*ptr) {
         return NS_TRUE;
     }
-    /* Format the message*/
+    /* Format the message */
     for (i = 0; SyslogFacilities[i].name; i++) {
         if (iFacility == SyslogFacilities[i].type) {
             sFacility = SyslogFacilities[i].name;
@@ -314,11 +317,12 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
     if (server->proc) {
         Tcl_Interp *interp = Ns_TclAllocateInterp(server->name);
         if (interp) {
-            rc = Tcl_VarEval(interp, server->proc, " ", ns_inet_ntoa(sa.sin_addr), " ", sSeverity, " ", sFacility, " {", ptr, "}", NULL);
+            rc = Tcl_VarEval(interp, server->proc, " ", ns_inet_ntoa(sa.sin_addr), " ", sSeverity, " ", sFacility, " {", ptr,
+                             "}", NULL);
             if (rc != TCL_OK) {
                 Ns_TclLogError(interp);
             } else {
-                res = (char*)Tcl_GetStringResult(interp);
+                res = (char *) Tcl_GetStringResult(interp);
                 if (res && *res) {
                     rc = TCL_ERROR;
                 }
@@ -349,9 +353,9 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
  *----------------------------------------------------------------------
  */
 
-static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
+static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[])
 {
-    Server *srvPtr  = (Server*)arg;
+    Server *srvPtr = (Server *) arg;
     char *str;
     int i, j, severity, status, cmd;
     Tcl_Obj *path;
@@ -380,21 +384,19 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
             Tcl_WrongNumArgs(interp, 2, objv, "name file ?-maxbackup num? ?-maxlines num? ?-rollfmt str?");
             return TCL_ERROR;
         }
-        logPtr = (SyslogFile*)ns_calloc(1, sizeof(SyslogFile));
+        logPtr = (SyslogFile *) ns_calloc(1, sizeof(SyslogFile));
         Ns_DStringInit(&logPtr->buffer);
         logPtr->name = ns_strdup(Tcl_GetString(objv[2]));
         logPtr->file = ns_strdup(Tcl_GetString(objv[3]));
         logPtr->maxbackup = 7;
         logPtr->maxlines = 2;
-        for (i = 4; i < objc - 1; i = i+2) {
+        for (i = 4; i < objc - 1; i = i + 2) {
             if (!strcmp(Tcl_GetString(objv[i]), "-maxbackup")) {
-                Tcl_GetIntFromObj(interp, objv[i+1], &logPtr->maxbackup);
-            } else
-            if (!strcmp(Tcl_GetString(objv[i]), "-maxlines")) {
-                Tcl_GetIntFromObj(interp, objv[i+1], &logPtr->maxlines);
-            } else
-            if (!strcmp(Tcl_GetString(objv[i]), "-rollftm")) {
-                logPtr->rollfmt = ns_strdup(Tcl_GetString(objv[i+1]));
+                Tcl_GetIntFromObj(interp, objv[i + 1], &logPtr->maxbackup);
+            } else if (!strcmp(Tcl_GetString(objv[i]), "-maxlines")) {
+                Tcl_GetIntFromObj(interp, objv[i + 1], &logPtr->maxlines);
+            } else if (!strcmp(Tcl_GetString(objv[i]), "-rollftm")) {
+                logPtr->rollfmt = ns_strdup(Tcl_GetString(objv[i + 1]));
             }
         }
         if (SyslogOpen(logPtr) != NS_OK) {
@@ -410,7 +412,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
     case cmdList:
         Ns_MutexLock(&srvPtr->mutex);
         for (logPtr = srvPtr->files; logPtr; logPtr = logPtr->nextPtr) {
-             Tcl_AppendResult(interp, logPtr->name, " ", 0);
+            Tcl_AppendResult(interp, logPtr->name, " ", 0);
         }
         Ns_MutexUnlock(&srvPtr->mutex);
         break;
@@ -427,8 +429,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
             Ns_MutexLock(&logPtr->lock);
             Ns_DStringPrintf(&ds, "%s %s %d %d {%s} %lu", logPtr->name, logPtr->file,
                              logPtr->maxbackup, logPtr->maxlines,
-                             logPtr->rollfmt ? logPtr->rollfmt : "",
-                             logPtr->writtenlines);
+                             logPtr->rollfmt ? logPtr->rollfmt : "", logPtr->writtenlines);
             Ns_MutexUnlock(&logPtr->lock);
             Tcl_AppendResult(interp, ds.string, 0);
             Ns_DStringFree(&ds);
@@ -489,8 +490,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
             }
         }
         if (status != NS_OK) {
-            Tcl_AppendResult(interp, "could not roll \"", logPtr->file,
-                             "\": ", Tcl_PosixError(interp), NULL);
+            Tcl_AppendResult(interp, "could not roll \"", logPtr->file, "\": ", Tcl_PosixError(interp), NULL);
         }
         Ns_MutexUnlock(&logPtr->lock);
         if (status != NS_OK) {
@@ -504,10 +504,10 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
             return TCL_ERROR;
         }
         Ns_MutexLock(&srvPtr->mutex);
-        for (i = 4; i < objc - 1; i = i+2) {
+        for (i = 4; i < objc - 1; i = i + 2) {
             if (!strcmp(Tcl_GetString(objv[i]), "-facility")) {
                 for (j = 0; SyslogFacilities[j].name; j++) {
-                    if (!strcasecmp(Tcl_GetString(objv[i+1]), SyslogFacilities[j].name)) {
+                    if (!strcasecmp(Tcl_GetString(objv[i + 1]), SyslogFacilities[j].name)) {
                         Ns_MutexLock(&srvPtr->mutex);
                         srvPtr->facility = SyslogFacilities[j].type;
                         Ns_MutexUnlock(&srvPtr->mutex);
@@ -521,22 +521,22 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
             }
             if (!strcmp(Tcl_GetString(objv[i]), "-options")) {
                 srvPtr->options = 0;
-                if (strstr(Tcl_GetString(objv[i+1]), "CONS")) {
+                if (strstr(Tcl_GetString(objv[i + 1]), "CONS")) {
                     srvPtr->options |= LOG_CONS;
                 }
-                if (strstr(Tcl_GetString(objv[i+1]), "NDELAY")) {
+                if (strstr(Tcl_GetString(objv[i + 1]), "NDELAY")) {
                     srvPtr->options |= LOG_NDELAY;
                 }
-                if (strstr(Tcl_GetString(objv[i+1]), "PERROR")) {
+                if (strstr(Tcl_GetString(objv[i + 1]), "PERROR")) {
                     srvPtr->options |= LOG_PERROR;
                 }
-                if (strstr(Tcl_GetString(objv[i+1]), "PID")) {
+                if (strstr(Tcl_GetString(objv[i + 1]), "PID")) {
                     srvPtr->options |= LOG_PID;
                 }
-                if (strstr(Tcl_GetString(objv[i+1]), "ODELAY")) {
+                if (strstr(Tcl_GetString(objv[i + 1]), "ODELAY")) {
                     srvPtr->options |= LOG_ODELAY;
                 }
-                if (strstr(Tcl_GetString(objv[i+1]), "NOWAIT")) {
+                if (strstr(Tcl_GetString(objv[i + 1]), "NOWAIT")) {
                     srvPtr->options |= LOG_NOWAIT;
                 }
                 closelog();
@@ -546,7 +546,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
             }
             if (!strcmp(Tcl_GetString(objv[i]), "-ident")) {
                 memset(srvPtr->ident, 0, sizeof(srvPtr->ident));
-                strncpy(srvPtr->ident, Tcl_GetString(objv[i+1]), sizeof(srvPtr->ident) - 1);
+                strncpy(srvPtr->ident, Tcl_GetString(objv[i + 1]), sizeof(srvPtr->ident) - 1);
                 closelog();
                 srvPtr->opened = 0;
                 i += 2;
@@ -557,10 +557,10 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
         severity = LOG_INFO;
         if (i < objc) {
             for (j = 0; SyslogSeverities[j].name; j++) {
-                 if (!strcasecmp(Tcl_GetString(objv[i+1]), SyslogSeverities[j].name)) {
-                     severity = SyslogSeverities[j].type;
-                     break;
-                 }
+                if (!strcasecmp(Tcl_GetString(objv[i + 1]), SyslogSeverities[j].name)) {
+                    severity = SyslogSeverities[j].type;
+                    break;
+                }
             }
             i++;
         }
@@ -577,7 +577,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONS
     return TCL_OK;
 }
 
-static SyslogFile *SyslogFind(Server *srvPtr, const char *name)
+static SyslogFile *SyslogFind(Server * srvPtr, const char *name)
 {
     SyslogFile *logPtr;
 
@@ -590,26 +590,25 @@ static SyslogFile *SyslogFind(Server *srvPtr, const char *name)
 }
 
 
-static int SyslogOpen(SyslogFile *logPtr)
+static int SyslogOpen(SyslogFile * logPtr)
 {
     int fd;
-    
-    fd = open(logPtr->file, O_APPEND|O_WRONLY|O_CREAT, 0644);
+
+    fd = open(logPtr->file, O_APPEND | O_WRONLY | O_CREAT, 0644);
     if (fd == -1) {
-        Ns_Log(Error,"nssyslog: error '%s' opening '%s'",
-               strerror(errno), logPtr->file);
+        Ns_Log(Error, "nssyslog: error '%s' opening '%s'", strerror(errno), logPtr->file);
         return NS_ERROR;
     }
     if (logPtr->fd > 0) {
         close(logPtr->fd);
     }
     logPtr->fd = fd;
-    Ns_Log(Notice,"nssyslog: opened '%s'", logPtr->file);
-    
+    Ns_Log(Notice, "nssyslog: opened '%s'", logPtr->file);
+
     return NS_OK;
 }
 
-static int SyslogClose(SyslogFile *logPtr)
+static int SyslogClose(SyslogFile * logPtr)
 {
     int status = NS_OK;
 
@@ -618,13 +617,13 @@ static int SyslogClose(SyslogFile *logPtr)
         close(logPtr->fd);
         logPtr->fd = -1;
         Ns_DStringFree(&logPtr->buffer);
-        Ns_Log(Notice,"nssyslog: closed '%s'", logPtr->file);
+        Ns_Log(Notice, "nssyslog: closed '%s'", logPtr->file);
     }
 
     return status;
 }
 
-static void SyslogFree(SyslogFile *logPtr)
+static void SyslogFree(SyslogFile * logPtr)
 {
     if (logPtr) {
         close(logPtr->fd);
@@ -636,15 +635,14 @@ static void SyslogFree(SyslogFile *logPtr)
     }
 }
 
-static int SyslogFlush(SyslogFile *logPtr, Ns_DString *dsPtr)
+static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr)
 {
-    int   len = dsPtr->length;
+    int len = dsPtr->length;
     char *buf = dsPtr->string;
 
     if (len > 0) {
         if (logPtr->fd > 0 && write(logPtr->fd, buf, len) != len) {
-            Ns_Log(Error, "nssyslog: %s: logging disabled: write() failed: '%s'",
-                   logPtr->name, strerror(errno));
+            Ns_Log(Error, "nssyslog: %s: logging disabled: write() failed: '%s'", logPtr->name, strerror(errno));
             close(logPtr->fd);
             logPtr->fd = -1;
         }
@@ -653,9 +651,9 @@ static int SyslogFlush(SyslogFile *logPtr, Ns_DString *dsPtr)
     return (logPtr->fd == -1) ? NS_ERROR : NS_OK;
 }
 
-static int SyslogRoll(SyslogFile *logPtr)
+static int SyslogRoll(SyslogFile * logPtr)
 {
-    int      status;
+    int status;
     Tcl_Obj *path, *newpath;
 
     SyslogClose(logPtr);
@@ -672,27 +670,25 @@ static int SyslogRoll(SyslogFile *logPtr)
         if (logPtr->rollfmt == NULL) {
             status = Ns_RollFile(logPtr->file, logPtr->maxbackup);
         } else {
-            time_t      now = time(0);
-            char        timeBuf[512];
-            Ns_DString  ds;
-            struct tm  *ptm = ns_localtime(&now);
-            
-            strftime(timeBuf, sizeof(timeBuf)-1, logPtr->rollfmt, ptm);
+            time_t now = time(0);
+            char timeBuf[512];
+            Ns_DString ds;
+            struct tm *ptm = ns_localtime(&now);
+
+            strftime(timeBuf, sizeof(timeBuf) - 1, logPtr->rollfmt, ptm);
             Ns_DStringInit(&ds);
-            Ns_DStringVarAppend(&ds, logPtr->file,".", timeBuf, NULL);
+            Ns_DStringVarAppend(&ds, logPtr->file, ".", timeBuf, NULL);
             newpath = Tcl_NewStringObj(ds.string, -1);
             Tcl_IncrRefCount(newpath);
             status = Tcl_FSAccess(newpath, F_OK);
             if (status == 0) {
                 status = Ns_RollFile(ds.string, logPtr->maxbackup);
             } else if (Tcl_GetErrno() != ENOENT) {
-                Ns_Log(Error, "nssyslog: access(%s, F_OK) failed: '%s'",
-                       ds.string, strerror(Tcl_GetErrno()));
+                Ns_Log(Error, "nssyslog: access(%s, F_OK) failed: '%s'", ds.string, strerror(Tcl_GetErrno()));
                 status = NS_ERROR;
             }
             if (status == NS_OK && Tcl_FSRenameFile(path, newpath)) {
-                Ns_Log(Error, "nssyslog: rename(%s,%s) failed: '%s'",
-                       logPtr->file, ds.string, strerror(Tcl_GetErrno()));
+                Ns_Log(Error, "nssyslog: rename(%s,%s) failed: '%s'", logPtr->file, ds.string, strerror(Tcl_GetErrno()));
                 status = NS_ERROR;
             }
             Tcl_DecrRefCount(newpath);
@@ -706,24 +702,23 @@ static int SyslogRoll(SyslogFile *logPtr)
     return (status == NS_OK) ? SyslogOpen(logPtr) : NS_ERROR;
 }
 
-static void SyslogCallback(int(proc)(SyslogFile *), void *arg, char *desc)
+static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc)
 {
-    int  status;
-    SyslogFile *logPtr = (SyslogFile*)arg;
+    int status;
+    SyslogFile *logPtr = (SyslogFile *) arg;
 
     Ns_MutexLock(&logPtr->lock);
-    status =(*proc)(logPtr);
+    status = (*proc) (logPtr);
     Ns_MutexUnlock(&logPtr->lock);
-    
+
     if (status != NS_OK) {
-        Ns_Log(Error,"nssyslog: failed: %s '%s': '%s'", desc, logPtr->file,
-               strerror(Tcl_GetErrno()));
+        Ns_Log(Error, "nssyslog: failed: %s '%s': '%s'", desc, logPtr->file, strerror(Tcl_GetErrno()));
     }
 }
 
-static void SyslogCloseCallback(Ns_Time *toPtr, void *arg)
+static void SyslogCloseCallback(Ns_Time * toPtr, void *arg)
 {
-    Server *srvPtr = (Server*)arg;
+    Server *srvPtr = (Server *) arg;
     SyslogFile *logPtr;
 
     for (logPtr = srvPtr->files; logPtr; logPtr = logPtr->nextPtr) {
@@ -733,7 +728,7 @@ static void SyslogCloseCallback(Ns_Time *toPtr, void *arg)
 
 static void SyslogRollCallback(void *arg)
 {
-    Server *srvPtr = (Server*)arg;
+    Server *srvPtr = (Server *) arg;
     SyslogFile *logPtr;
 
     for (logPtr = srvPtr->files; logPtr; logPtr = logPtr->nextPtr) {
@@ -741,7 +736,7 @@ static void SyslogRollCallback(void *arg)
     }
 }
 
-static void SyslogWrite(SyslogFile *logPtr, char *str)
+static void SyslogWrite(SyslogFile * logPtr, char *str)
 {
     Ns_MutexLock(&logPtr->lock);
     if (str) {
