@@ -1,4 +1,4 @@
-/* 
+/*
  * The contents of this file are subject to the Mozilla Public License
  * Version 1.1(the "License"); you may not use this file except in
  * compliance with the License. You may obtain a copy of the License at
@@ -20,7 +20,7 @@
  * version of this file under either the License or the GPL.
  *
  * Author Vlad Seryakov vlad@crystalballinc.com
- * 
+ *
  */
 
 /*
@@ -67,77 +67,99 @@ typedef struct _syslogFile {
     Ns_DString buffer;
 } SyslogFile;
 
-typedef struct _server {
-    char *name;
-    char *proc;
-    char *path;
-    char *address;
-    int port;
-    int rollhour;
-    int udp_sock;
-    int unix_sock;
-    short errors;
+typedef struct _syslogConfig {
     Ns_Mutex mutex;
     Ns_DString buffer;
     SyslogFile *files;
-    int opened;
-    int facility;
-    int options;
-    char ident[32];
-} Server;
+} SyslogConfig;
 
-static struct {
-    int type;
+typedef struct _syslogServer {
+    int port;
     char *name;
-} SyslogFacilities[] = {
-    {
-    0, "kern"}, {
-    1, "user"}, {
-    2, "mail"}, {
-    3, "daemon"}, {
-    4, "auth"}, {
-    5, "intern"}, {
-    6, "print"}, {
-    7, "news"}, {
-    8, "uucp"}, {
-    9, "clock"}, {
-    10, "security"}, {
-    11, "ftp"}, {
-    12, "ntp"}, {
-    13, "audit"}, {
-    14, "alert"}, {
-    15, "clock"}, {
-    16, "local0"}, {
-    17, "local1"}, {
-    18, "local2"}, {
-    19, "local3"}, {
-    20, "local4"}, {
-    21, "local5"}, {
-    22, "local6"}, {
-    23, "local7"}, {
-    0, 0}
+    char *proc;
+    char *address;
+    int rollhour;
+    int sock;
+    int opts;
+    int drivermode;
+    int globalmode;
+    short errors;
+    SyslogConfig *config;
+} SyslogServer;
+
+typedef struct _syslogRequest {
+    SyslogServer *server;
+    int size;
+    char *buffer;
+    struct sockaddr_in sa;
+} SyslogRequest;
+
+typedef struct _syslogTls {
+    int      sock;                /* fd for log */
+    int      connected;           /* have done connect */
+    int      options;             /* status bits, set by openlog() */
+    char     *tag;                /* string to tag the entry with */
+    char     *path;               /* path to socket or hostname */
+    int      facility;            /* default facility code */
+    int      severity;            /* default severity code */
+} SyslogTls;
+
+static Ns_ObjvTable syslogFacilities[] = {
+    { "kern",     LOG_KERN },
+    { "user",     LOG_USER },
+    { "mail",     LOG_MAIL },
+    { "daemon",   LOG_DAEMON },
+    { "auth",     LOG_AUTH },
+    { "intern",   LOG_SYSLOG },
+    { "print",    LOG_LPR },
+    { "news",     LOG_NEWS },
+    { "uucp",     LOG_UUCP },
+    { "clock",    LOG_CRON },
+    { "security", LOG_AUTHPRIV },
+    { "authpriv", LOG_AUTHPRIV },
+    { "ftp",      LOG_FTP },
+    { "local0",   LOG_LOCAL0 },
+    { "local1",   LOG_LOCAL1 },
+    { "local2",   LOG_LOCAL2 },
+    { "local3",   LOG_LOCAL3 },
+    { "local4",   LOG_LOCAL4 },
+    { "local5",   LOG_LOCAL5 },
+    { "local6",   LOG_LOCAL6 },
+    { "local7",   LOG_LOCAL7 },
+    { NULL,       0 }
 };
 
-static struct {
-    int type;
-    char *name;
-} SyslogSeverities[] = {
-    {
-    0, "emergency"}, {
-    1, "alert"}, {
-    2, "critical"}, {
-    3, "error"}, {
-    4, "warning"}, {
-    5, "notice"}, {
-    6, "info"}, {
-    7, "debug"}, {
-    0, 0}
+static Ns_ObjvTable syslogSeverities[] = {
+    { "emergency", LOG_EMERG },
+    { "alert",     LOG_ALERT },
+    { "critical",  LOG_CRIT },
+    { "error",     LOG_ERR },
+    { "warning",   LOG_WARNING },
+    { "notice",    LOG_NOTICE },
+    { "info",      LOG_INFO },
+    { "debug",     LOG_DEBUG },
+    { NULL,        0 }
 };
 
-static Ns_SockProc SyslogProc;
+static Ns_ObjvTable syslogOptions[] = {
+    { "CONS",   LOG_CONS },
+    { "NDELAY", LOG_NDELAY },
+    { "PERROR", LOG_PERROR },
+    { "PID",    LOG_PID },
+    { "ODELAY", LOG_ODELAY },
+    { "NOWAIT", LOG_NOWAIT },
+    { NULL,     0 }
+};
+
+static SyslogTls *SyslogGetTls(void);
+static void SyslogFreeTls(void *arg);
+static void SyslogInit(const char *path, const char *tag, int options, int facility);
+static void SyslogShutdown(void);
+static void SyslogSend(int severity, const char *fmt, ...);
+static void SyslogSendV(int severity, const char *fmt, va_list ap);
 static int SyslogInterpInit(Tcl_Interp * interp, void *arg);
 static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[]);
-static SyslogFile *SyslogFind(Server * srvPtr, const char *name);
+static SyslogFile *SyslogFind(SyslogServer * srvPtr, const char *name);
 static int SyslogOpen(SyslogFile * logPtr);
 static int SyslogClose(SyslogFile * logPtr);
 static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr);
@@ -147,6 +169,14 @@ static void SyslogFree(SyslogFile * logPtr);
 static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc);
 static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
 static void SyslogRollCallback(void *arg);
+static int SyslogRequestProc(void *arg, Ns_Conn *conn);
+static int SyslogRequestProcess(SyslogRequest *req);
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock);
+static Ns_DriverProc SyslogDriverProc;
+static Ns_SockProc SyslogSockProc;
+
+static Ns_Tls tls;
+static SyslogConfig *globalConfig = NULL;
 
 NS_EXPORT int Ns_ModuleVersion = 1;
 
@@ -170,42 +200,82 @@ NS_EXPORT int Ns_ModuleVersion = 1;
 NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 {
     char *path;
-    SOCKET sock;
-    Server *srvPtr;
+    SyslogServer *srvPtr;
+    Ns_DriverInitData init;
+    static int first = 0;
+
+    if (!first) {
+        first = 1;
+        Ns_TlsAlloc(&tls, SyslogFreeTls);
+    }
 
     path = Ns_ConfigGetPath(server, module, NULL);
-    srvPtr = (Server *) ns_calloc(1, sizeof(Server));
+    srvPtr = (SyslogServer *) ns_calloc(1, sizeof(SyslogServer));
     srvPtr->name = server;
 
+    Ns_ConfigGetBool(path, "drivermode", &srvPtr->drivermode);
+    Ns_ConfigGetBool(path, "globalmode", &srvPtr->globalmode);
+    srvPtr->port = Ns_ConfigIntRange(path, "port", 514, 1, 65535);
     srvPtr->proc = Ns_ConfigGetValue(path, "proc");
     srvPtr->rollhour = Ns_ConfigIntRange(path, "rollhour", 0, 0, 23);
     srvPtr->address = Ns_ConfigGetValue(path, "address");
-    srvPtr->port = Ns_ConfigIntRange(path, "port", 514, 1, 65535);
-    if (!(srvPtr->path = Ns_ConfigGetValue(path, "path"))) {
-        srvPtr->path = "/dev/log";
+
+    if (srvPtr->address == NULL) {
+        srvPtr->address = "/dev/log";
     }
-    srvPtr->options = LOG_PID;
-    srvPtr->facility = LOG_USER;
+    if (Ns_PathIsAbsolute(srvPtr->address)) {
+        srvPtr->opts = NS_DRIVER_UNIX;
+    } else {
+        srvPtr->opts = NS_DRIVER_UDP;
+    }
 
     /* Configure Syslog listener */
-    if (srvPtr->address) {
-        if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port)) == -1) {
+    if (srvPtr->drivermode) {
+        init.version = NS_DRIVER_VERSION_1;
+        init.name = "nssyslog";
+        init.proc = SyslogDriverProc;
+        init.opts = srvPtr->opts;
+        init.arg = srvPtr;
+        init.path = NULL;
+        if (Ns_DriverInit(server, module, &init) != NS_OK) {
+            Ns_Log(Error, "%s: driver init failed", module);
+            ns_free(srvPtr);
+            return NS_ERROR;
+        }
+        Ns_RegisterRequest(server, "SYSLOG",  "/", SyslogRequestProc, NULL, srvPtr, 0);
+
+    } else {
+        if (srvPtr->opts == NS_DRIVER_UNIX) {
+            srvPtr->sock = Ns_SockListenUnix(srvPtr->address, 0, 0666);
+        } else {
+            srvPtr->sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port);
+        }
+        if (srvPtr->sock == -1) {
             Ns_Log(Error, "nssyslogd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
         } else {
-            srvPtr->udp_sock = sock;
-            Ns_SockCallback(sock, SyslogProc, srvPtr, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
-            Ns_Log(Notice, "nssyslogd: listening on %s:%d %s", srvPtr->address, srvPtr->port,
+            Ns_SockCallback(srvPtr->sock, SyslogSockProc, srvPtr, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
+            Ns_Log(Notice, "%s: listening on %s:%d %s", module, srvPtr->address, srvPtr->port,
                    srvPtr->proc ? srvPtr->proc : "");
         }
     }
-    if ((sock = Ns_SockListenUnix(srvPtr->path, 0, 0666)) == -1) {
-        Ns_Log(Error, "nssyslogd: couldn't create socket: %s: %s", srvPtr->path, strerror(errno));
-    } else {
-        srvPtr->unix_sock = sock;
-        Ns_SockCallback(sock, SyslogProc, srvPtr, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
-        Ns_Log(Notice, "nssyslogd: listening on %s %s", srvPtr->path, srvPtr->proc ? srvPtr->proc : "");
+
+    /*
+     *  In global mode all modules are linked to the same files and buffers
+     *  which will allow multiple servers listening on different ports, like
+     *  Unix and UDP to re-use the same configuration.
+     */
+
+    if (!srvPtr->globalmode || !globalConfig) {
+        srvPtr->config = ns_calloc(1, sizeof(SyslogConfig));
+        Ns_DStringInit(&srvPtr->config->buffer);
     }
-    Ns_DStringInit(&srvPtr->buffer);
+    if (!globalConfig) {
+        globalConfig = srvPtr->config;
+    }
+    if (srvPtr->globalmode) {
+        srvPtr->config = globalConfig;
+    }
+
     Ns_RegisterAtShutdown(SyslogCloseCallback, srvPtr);
     Ns_ScheduleDaily((Ns_SchedProc *) SyslogRollCallback, srvPtr, 0, srvPtr->rollhour, 0, NULL);
     Ns_TclRegisterTrace(server, SyslogInterpInit, srvPtr, NS_TCL_TRACE_CREATE);
@@ -236,7 +306,7 @@ static int SyslogInterpInit(Tcl_Interp * interp, void *arg)
 /*
  *----------------------------------------------------------------------
  *
- * SyslogProc --
+ * SyslogSockProc --
  *
  *	Socket callback to receive syslog events
  *
@@ -249,37 +319,172 @@ static int SyslogInterpInit(Tcl_Interp * interp, void *arg)
  *----------------------------------------------------------------------
  */
 
-static int SyslogProc(SOCKET sock, void *arg, int why)
+static int SyslogSockProc(SOCKET sock, void *arg, int why)
 {
-    struct sockaddr_in sa;
-    Server *server = (Server *) arg;
-    int i, rc, len, priority = -1, iFacility = 0, iSeverity = 0;
-    char buf[1024], *ptr, *res = 0, *sFacility = "none", *sSeverity = "none";
-    socklen_t salen = sizeof(struct sockaddr_in);
+    SyslogServer *server = (SyslogServer*)arg;
+    SyslogRequest *req;
 
     if (why != NS_SOCK_READ) {
         close(sock);
         return NS_FALSE;
     }
+    req = SyslogRequestCreate(server, sock);
+    if (req != NULL) {
+        SyslogRequestProcess(req);
+        ns_free(req);
+    }
+    return NS_TRUE;
+}
 
-    if (sock == server->udp_sock) {
-        if ((len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr *) &sa, &salen)) <= 0) {
+/*
+ *----------------------------------------------------------------------
+ *
+ * SyslogDriverProc --
+ *
+ *	Driver callback to receive syslog events
+ *
+ * Results:
+ *	NS_TRUE
+ *
+ * Side effects:
+ *  	None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int SyslogDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int nbufs)
+{
+    SyslogServer *server = (SyslogServer*)sock->driver->arg;
+    SyslogRequest *req;
+
+    switch (cmd) {
+     case DriverAccept:
+         /*
+          * Read the packet and store it in the request buffer, registered proc
+          * then will use that data for processing
+          */
+
+         if (Ns_DriverSockRequest(sock, "SYSLOG / SYSLOG/1.0") == NS_OK) {
+             req = SyslogRequestCreate(server, sock->sock);
+             if (req != NULL) {
+                 sock->sa = req->sa;
+                 sock->arg = req;
+                 return NS_OK;
+             }
+         }
+         return NS_FATAL;
+
+     case DriverClose:
+     case DriverRecv:
+     case DriverSend:
+     case DriverKeep:
+         break;
+    }
+    return NS_ERROR;
+}
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * SyslogRequestProc --
+ *
+ *	Request callback for processing syslog connections
+ *
+ * Results:
+ *	NS_TRUE
+ *
+ * Side effects:
+ *  	None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int SyslogRequestProc(void *arg, Ns_Conn *conn)
+{
+    Ns_Sock *sock = Ns_ConnSockPtr(conn);
+    SyslogRequest *req = (SyslogRequest*)sock->arg;
+
+    if (req != NULL) {
+        Ns_ConnSetPeer(conn, &req->sa);
+        SyslogRequestProcess(req);
+        ns_free(req);
+    }
+    return NS_OK;
+}
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * SyslogRequestCreate --
+ *
+ *	Read syslog data from the socket
+ *
+ * Results:
+ *	NS_TRUE
+ *
+ * Side effects:
+ *  	None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock)
+{
+    int size;
+    char buffer[1024];
+    SyslogRequest *req;
+    struct sockaddr_in sa;
+    socklen_t salen = sizeof(struct sockaddr_in);
+
+    if (server->opts & NS_DRIVER_UDP) {
+        if ((size = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *) &sa, &salen)) <= 0) {
             if (server->errors >= 0 && server->errors++ < 10) {
                 Ns_Log(Error, "SyslogProc: %d: recvfrom error: %s", sock, strerror(errno));
             }
-            return NS_TRUE;
+            return NULL;
         }
     } else {
-        if ((len = recv(sock, buf, sizeof(buf) - 1, 0)) <= 0) {
+        if ((size = recv(sock, buffer, sizeof(buffer) - 1, 0)) <= 0) {
             if (server->errors >= 0 && server->errors++ < 10) {
-                Ns_Log(Error, "SyslogProc: %d: recv error: %s", sock, strerror(errno));
+
+            Ns_Log(Error, "SyslogProc: %d: recv error: %s", sock, strerror(errno));
             }
-            return NS_TRUE;
+            return NULL;
         }
         sa.sin_addr.s_addr = inet_addr("127.0.0.1");
     }
-    buf[len] = 0;
-    ptr = buf;
+    buffer[size] = 0;
+    req = ns_malloc(sizeof(SyslogRequest));
+    req->server = server;
+    req->buffer = ns_strdup(buffer);
+    req->size = size;
+    req->sa = sa;
+    return req;
+}
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * SyslogRequestProcess --
+ *
+ *	Perform actual syslogging
+ *
+ * Results:
+ *	NS_TRUE
+ *
+ * Side effects:
+ *  	None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int SyslogRequestProcess(SyslogRequest *req)
+{
+    SyslogServer *server = req->server;
+    int i, rc, priority = -1, iFacility = 0, iSeverity = 0;
+    char *buf, *ptr, *res = 0, *sFacility = "none", *sSeverity = "none";
+
+    ptr = buf = req->buffer;
     /* Parse priority */
     if (*ptr == '<') {
         priority = atoi(++ptr);
@@ -291,8 +496,8 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
         }
         ptr++;
     }
-    iFacility = priority / 8;
-    iSeverity = priority - iFacility * 8;
+    iFacility = LOG_FAC(priority)<<3;
+    iSeverity = LOG_PRI(priority);
     /* Parse timestamp: Mon dd hh:mm:ss */
     while (*ptr && !isspace(*ptr++));
     while (*ptr && !isspace(*ptr++));
@@ -302,23 +507,24 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
         return NS_TRUE;
     }
     /* Format the message */
-    for (i = 0; SyslogFacilities[i].name; i++) {
-        if (iFacility == SyslogFacilities[i].type) {
-            sFacility = SyslogFacilities[i].name;
+    for (i = 0; syslogFacilities[i].key; i++) {
+        if (iFacility == syslogFacilities[i].value) {
+            sFacility = syslogFacilities[i].key;
             break;
         }
     }
-    for (i = 0; SyslogSeverities[i].name; i++) {
-        if (iFacility == SyslogSeverities[i].type) {
-            sFacility = SyslogSeverities[i].name;
+    for (i = 0; syslogSeverities[i].key; i++) {
+        if (iSeverity == syslogSeverities[i].value) {
+            sSeverity = syslogSeverities[i].key;
             break;
         }
     }
     if (server->proc) {
         Tcl_Interp *interp = Ns_TclAllocateInterp(server->name);
         if (interp) {
-            rc = Tcl_VarEval(interp, server->proc, " ", ns_inet_ntoa(sa.sin_addr), " ", sSeverity, " ", sFacility, " {", ptr,
-                             "}", NULL);
+            rc = Tcl_VarEval(interp, server->proc, " ",
+                             ns_inet_ntoa(req->sa.sin_addr), " ",
+                             sSeverity, " ", sFacility, " {", ptr, "}", NULL);
             if (rc != TCL_OK) {
                 Ns_TclLogError(interp);
             } else {
@@ -333,7 +539,7 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
             }
         }
     }
-    Ns_Log(Notice, "%s/%s: %s", sSeverity, sFacility, ptr);
+    Ns_Log(Notice, "%s/%s: %s", sFacility, sSeverity, ptr);
     return NS_TRUE;
 }
 
@@ -355,11 +561,11 @@ static int SyslogProc(SOCKET sock, void *arg, int why)
 
 static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[])
 {
-    Server *srvPtr = (Server *) arg;
-    char *str;
-    int i, j, severity, status, cmd;
-    Tcl_Obj *path;
+    SyslogServer *srvPtr = (SyslogServer *) arg;
     SyslogFile *logPtr;
+    char *str = NULL;
+    Tcl_Obj *path;
+    int status, cmd;
 
     enum {
         cmdWrite, cmdCreate, cmdRoll, cmdList, cmdStat, cmdFlush, cmdSend
@@ -379,42 +585,50 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
     }
 
     switch (cmd) {
-    case cmdCreate:
-        if (objc < 4) {
-            Tcl_WrongNumArgs(interp, 2, objv, "name file ?-maxbackup num? ?-maxlines num? ?-rollfmt str?");
+    case cmdCreate: {
+        SyslogFile *logPtr = (SyslogFile *) ns_calloc(1, sizeof(SyslogFile));
+        Ns_ObjvSpec crOpts[] = {
+            {"-maxbackup", Ns_ObjvInt,    &logPtr->maxbackup, NULL},
+            {"-maxlines",  Ns_ObjvInt,    &logPtr->maxlines,  NULL},
+            {"-rollfmt",   Ns_ObjvString, &logPtr->rollfmt,   NULL},
+            {"--",         Ns_ObjvBreak,  NULL,    NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+        Ns_ObjvSpec crArgs[] = {
+            {"name",       Ns_ObjvString, &logPtr->name,      NULL},
+            {"file",       Ns_ObjvString, &logPtr->file,      NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+
+        logPtr->maxlines = 2;
+        logPtr->maxbackup = 7;
+
+        if (Ns_ParseObjv(crOpts, crArgs, interp, 2, objc, objv) != NS_OK) {
+            ns_free(logPtr);
             return TCL_ERROR;
         }
-        logPtr = (SyslogFile *) ns_calloc(1, sizeof(SyslogFile));
+
         Ns_DStringInit(&logPtr->buffer);
-        logPtr->name = ns_strdup(Tcl_GetString(objv[2]));
-        logPtr->file = ns_strdup(Tcl_GetString(objv[3]));
-        logPtr->maxbackup = 7;
-        logPtr->maxlines = 2;
-        for (i = 4; i < objc - 1; i = i + 2) {
-            if (!strcmp(Tcl_GetString(objv[i]), "-maxbackup")) {
-                Tcl_GetIntFromObj(interp, objv[i + 1], &logPtr->maxbackup);
-            } else if (!strcmp(Tcl_GetString(objv[i]), "-maxlines")) {
-                Tcl_GetIntFromObj(interp, objv[i + 1], &logPtr->maxlines);
-            } else if (!strcmp(Tcl_GetString(objv[i]), "-rollftm")) {
-                logPtr->rollfmt = ns_strdup(Tcl_GetString(objv[i + 1]));
-            }
-        }
+        logPtr->name = ns_strdup(logPtr->name);
+        logPtr->file = ns_strdup(logPtr->file);
+        logPtr->rollfmt = ns_strcopy(logPtr->rollfmt);
         if (SyslogOpen(logPtr) != NS_OK) {
             SyslogFree(logPtr);
             return TCL_ERROR;
         }
-        Ns_MutexLock(&srvPtr->mutex);
-        logPtr->nextPtr = srvPtr->files;
-        srvPtr->files = logPtr;
-        Ns_MutexUnlock(&srvPtr->mutex);
+        Ns_MutexLock(&srvPtr->config->mutex);
+        logPtr->nextPtr = srvPtr->config->files;
+        srvPtr->config->files = logPtr;
+        Ns_MutexUnlock(&srvPtr->config->mutex);
         break;
+     }
 
     case cmdList:
-        Ns_MutexLock(&srvPtr->mutex);
-        for (logPtr = srvPtr->files; logPtr; logPtr = logPtr->nextPtr) {
+        Ns_MutexLock(&srvPtr->config->mutex);
+        for (logPtr = srvPtr->config->files; logPtr; logPtr = logPtr->nextPtr) {
             Tcl_AppendResult(interp, logPtr->name, " ", 0);
         }
-        Ns_MutexUnlock(&srvPtr->mutex);
+        Ns_MutexUnlock(&srvPtr->config->mutex);
         break;
 
     case cmdStat:
@@ -498,90 +712,38 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         }
         break;
 
-    case cmdSend:
-        if (objc < 4) {
-            Tcl_WrongNumArgs(interp, 2, objv, " ?-facility num? ?-options num? ?-ident str? severity message");
+    case cmdSend: {
+        char *host = NULL, *tag = NULL;
+        int severity = -1, options = 0, facility = -1;
+        Ns_ObjvSpec sndOpts[] = {
+            {"-host",      Ns_ObjvString, &host,      NULL},
+            {"-tag",       Ns_ObjvString, &tag,       NULL},
+            {"-facility",  Ns_ObjvIndex,  &facility,  syslogFacilities},
+            {"-severity",  Ns_ObjvIndex,  &severity,  syslogSeverities},
+            {"-options",   Ns_ObjvFlags,  &options,   syslogOptions},
+            {"--",         Ns_ObjvBreak,  NULL,       NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+        Ns_ObjvSpec sndArgs[] = {
+            {"str",         Ns_ObjvString, &str,       NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+        if (Ns_ParseObjv(sndOpts, sndArgs, interp, 2, objc, objv) != NS_OK) {
             return TCL_ERROR;
         }
-        Ns_MutexLock(&srvPtr->mutex);
-        for (i = 4; i < objc - 1; i = i + 2) {
-            if (!strcmp(Tcl_GetString(objv[i]), "-facility")) {
-                for (j = 0; SyslogFacilities[j].name; j++) {
-                    if (!strcasecmp(Tcl_GetString(objv[i + 1]), SyslogFacilities[j].name)) {
-                        Ns_MutexLock(&srvPtr->mutex);
-                        srvPtr->facility = SyslogFacilities[j].type;
-                        Ns_MutexUnlock(&srvPtr->mutex);
-                        break;
-                    }
-                }
-                closelog();
-                srvPtr->opened = 0;
-                i += 2;
-                continue;
-            }
-            if (!strcmp(Tcl_GetString(objv[i]), "-options")) {
-                srvPtr->options = 0;
-                if (strstr(Tcl_GetString(objv[i + 1]), "CONS")) {
-                    srvPtr->options |= LOG_CONS;
-                }
-                if (strstr(Tcl_GetString(objv[i + 1]), "NDELAY")) {
-                    srvPtr->options |= LOG_NDELAY;
-                }
-                if (strstr(Tcl_GetString(objv[i + 1]), "PERROR")) {
-                    srvPtr->options |= LOG_PERROR;
-                }
-                if (strstr(Tcl_GetString(objv[i + 1]), "PID")) {
-                    srvPtr->options |= LOG_PID;
-                }
-                if (strstr(Tcl_GetString(objv[i + 1]), "ODELAY")) {
-                    srvPtr->options |= LOG_ODELAY;
-                }
-                if (strstr(Tcl_GetString(objv[i + 1]), "NOWAIT")) {
-                    srvPtr->options |= LOG_NOWAIT;
-                }
-                closelog();
-                srvPtr->opened = 0;
-                i += 2;
-                continue;
-            }
-            if (!strcmp(Tcl_GetString(objv[i]), "-ident")) {
-                memset(srvPtr->ident, 0, sizeof(srvPtr->ident));
-                strncpy(srvPtr->ident, Tcl_GetString(objv[i + 1]), sizeof(srvPtr->ident) - 1);
-                closelog();
-                srvPtr->opened = 0;
-                i += 2;
-                continue;
-            }
-            break;
-        }
-        severity = LOG_INFO;
-        if (i < objc) {
-            for (j = 0; SyslogSeverities[j].name; j++) {
-                if (!strcasecmp(Tcl_GetString(objv[i + 1]), SyslogSeverities[j].name)) {
-                    severity = SyslogSeverities[j].type;
-                    break;
-                }
-            }
-            i++;
-        }
-        if (i < objc) {
-            if (!srvPtr->opened) {
-                openlog(srvPtr->ident, srvPtr->options, srvPtr->facility);
-                srvPtr->opened = 1;
-            }
-            syslog(severity, Tcl_GetString(objv[i]));
-        }
-        Ns_MutexUnlock(&srvPtr->mutex);
+        SyslogInit(host, tag, options, facility);
+        SyslogSend(severity, str);
         break;
+      }
     }
     return TCL_OK;
 }
 
-static SyslogFile *SyslogFind(Server * srvPtr, const char *name)
+static SyslogFile *SyslogFind(SyslogServer * srvPtr, const char *name)
 {
     SyslogFile *logPtr;
 
-    for (logPtr = srvPtr->files; logPtr; logPtr = logPtr->nextPtr) {
+    for (logPtr = srvPtr->config->files; logPtr; logPtr = logPtr->nextPtr) {
         if (!strcasecmp(name, logPtr->name)) {
             break;
         }
@@ -718,20 +880,20 @@ static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc)
 
 static void SyslogCloseCallback(Ns_Time * toPtr, void *arg)
 {
-    Server *srvPtr = (Server *) arg;
+    SyslogServer *srvPtr = (SyslogServer *) arg;
     SyslogFile *logPtr;
 
-    for (logPtr = srvPtr->files; logPtr; logPtr = logPtr->nextPtr) {
+    for (logPtr = srvPtr->config->files; logPtr; logPtr = logPtr->nextPtr) {
         SyslogCallback(SyslogClose, logPtr, "close");
     }
 }
 
 static void SyslogRollCallback(void *arg)
 {
-    Server *srvPtr = (Server *) arg;
+    SyslogServer *srvPtr = (SyslogServer *) arg;
     SyslogFile *logPtr;
 
-    for (logPtr = srvPtr->files; logPtr; logPtr = logPtr->nextPtr) {
+    for (logPtr = srvPtr->config->files; logPtr; logPtr = logPtr->nextPtr) {
         SyslogCallback(SyslogRoll, logPtr, "roll");
     }
 }
@@ -750,4 +912,170 @@ static void SyslogWrite(SyslogFile * logPtr, char *str)
         logPtr->curlines = 0;
     }
     Ns_MutexUnlock(&logPtr->lock);
+}
+
+static SyslogTls *SyslogGetTls(void)
+{
+    SyslogTls *log = Ns_TlsGet(&tls);
+
+    if (log == NULL) {
+        log = ns_calloc(1, sizeof(SyslogTls));
+        log->sock = -1;
+        log->severity = LOG_INFO;
+        log->facility = LOG_USER;
+        log->tag = ns_strdup("nsd");
+        log->path = ns_strdup("/dev/log");
+        Ns_TlsSet(&tls, log);
+    }
+    return log;
+}
+
+static void SyslogFreeTls(void *arg)
+{
+    SyslogTls *log = (SyslogTls*)arg;
+
+    ns_free(log->tag);
+    ns_free(log->path);
+    ns_free(log);
+}
+
+static void SyslogInit(const char *path, const char *tag, int options, int facility)
+{
+    SyslogTls *log = SyslogGetTls();
+    struct sockaddr un;
+    int changed = 0;
+
+    if (path != NULL && strcmp(path, log->path)) {
+        ns_free(log->path);
+        log->path = ns_strdup(path);
+        changed = 1;
+    }
+    if (tag != NULL && strcmp(tag, log->tag)) {
+        ns_free(log->tag);
+        log->tag = ns_strdup(tag);
+        changed = 1;
+    }
+    if (options && options != log->options) {
+        log->options = options;
+        changed = 1;
+    }
+    if (facility != -1 && facility != log->facility) {
+        log->facility = facility;
+        changed = 1;
+    }
+    if (changed) {
+        SyslogShutdown();
+    }
+
+    if (log->sock == -1) {
+        un.sa_family = AF_UNIX;
+        strncpy(un.sa_data, log->path, sizeof(un.sa_data));
+        if (log->options & LOG_NDELAY) {
+            log->sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+        }
+    }
+    if (log->sock != -1 && !log->connected &&
+        connect(log->sock, &un, sizeof(un.sa_family)+strlen(un.sa_data)) != -1) {
+        log->connected = 1;
+    }
+}
+
+static void SyslogShutdown(void)
+{
+    SyslogTls *log = SyslogGetTls();
+
+    if (log->sock != -1) {
+        close(log->sock);
+    }
+    log->sock = -1;
+    log->connected = 0;
+}
+
+static void SyslogSend(int severity, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    SyslogSendV(severity, fmt, ap);
+    va_end(ap);
+}
+
+static void SyslogSendV(int severity, const char *fmt, va_list ap)
+{
+    SyslogTls *log = SyslogGetTls();
+    time_t now = time(NULL);
+    int cnt, fd, saved_errno = errno;
+    char tbuf[2048], fmt2[1024], *p = tbuf, *stdp = NULL, ch, *t1, *t2;
+
+    if (severity == -1) {
+        severity = log->severity;
+    }
+    /* see if we should just throw out this message */
+    if (!LOG_MASK(LOG_PRI(severity)) || (severity &~ (LOG_PRIMASK|LOG_FACMASK))) {
+        return;
+    }
+    if (log->sock < 0 || !log->connected) {
+        SyslogInit(NULL, NULL, log->options | LOG_NDELAY, -1);
+    }
+
+    /* set default facility if none specified */
+    if ((severity & LOG_FACMASK) == 0) {
+        severity |= log->facility;
+    }
+
+    /* build the message */
+    p += sprintf(tbuf, "<%d>%.15s ", severity, ctime(&now) + 4);
+    if (log->options & LOG_PERROR) {
+        stdp = p;
+    }
+    if (log->tag) {
+        strcpy(p, log->tag);
+        for (; *p; ++p);
+    }
+    if (log->options & LOG_PID) {
+        sprintf(p, "[%d]", getpid());
+        for (; *p; ++p);
+    }
+    if (log->tag) {
+        *p++ = ':';
+        *p++ = ' ';
+    }
+    /* substitute error message for %m */
+    for (t1 = fmt2; (ch = *fmt) != '\0' && t1 < fmt2 + sizeof(fmt2); ++fmt) {
+        if (ch == '%' && fmt[1] == 'm') {
+            ++fmt;
+            for (t2 = strerror(saved_errno); (*t1 = *t2++); ++t1);
+        } else {
+            *t1++ = ch;
+        }
+    }
+    *t1 = '\0';
+    vsprintf(p, fmt2, ap);
+    cnt = strlen(tbuf);
+
+    /* output to stderr if requested */
+    if (log->options & LOG_PERROR) {
+        struct iovec iov[2];
+        struct iovec *v = iov;
+
+        v->iov_base = stdp;
+        v->iov_len = cnt - (stdp - tbuf);
+        ++v;
+        v->iov_base = "\n";
+        v->iov_len = 1;
+        writev(2, iov, 2);
+    }
+    write(log->sock, tbuf, cnt + 1);
+
+    /* output to the console if requested */
+    if (log->options & LOG_CONS) {
+        if ((fd = open("/dev/console", O_WRONLY|O_NOCTTY, 0)) < 0) {
+            return;
+        }
+        strcat(tbuf, "\r\n");
+        cnt += 2;
+        p = index(tbuf, '>') + 1;
+        write(fd, p, cnt - (p - tbuf));
+        close(fd);
+    }
 }
