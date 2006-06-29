@@ -180,7 +180,8 @@ static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
 static void SyslogRollCallback(void *arg);
 static int SyslogRequestProc(void *arg, Ns_Conn *conn);
 static int SyslogRequestProcess(SyslogRequest *req);
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size);
+static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
 static Ns_DriverProc SyslogDriverProc;
 static Ns_SockProc SyslogSockProc;
 
@@ -223,7 +224,6 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     path = Ns_ConfigGetPath(server, module, NULL);
     srvPtr = (SyslogServer *) ns_calloc(1, sizeof(SyslogServer));
     srvPtr->name = server;
-    srvPtr->opts = NS_DRIVER_UDP;
     srvPtr->port = Ns_ConfigIntRange(path, "port", 514, 1, 65535);
     srvPtr->proc = Ns_ConfigGetValue(path, "proc");
     srvPtr->rollhour = Ns_ConfigIntRange(path, "rollhour", 0, 0, 23);
@@ -235,6 +235,8 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     }
     if (Ns_PathIsAbsolute(srvPtr->address)) {
         srvPtr->opts = NS_DRIVER_UNIX;
+    } else {
+        srvPtr->opts = NS_DRIVER_UDP;
     }
 
     /* Configure Syslog listener */
@@ -242,7 +244,8 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         init.version = NS_DRIVER_VERSION_1;
         init.name = "nssyslog";
         init.proc = SyslogDriverProc;
-        init.opts = srvPtr->opts;
+        init.opts = NS_DRIVER_QUEUE_ONREAD|NS_DRIVER_ASYNC;
+        init.opts |= srvPtr->opts;
         init.arg = srvPtr;
         init.path = NULL;
         if (Ns_DriverInit(server, module, &init) != NS_OK) {
@@ -253,18 +256,19 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         Ns_RegisterRequest(server, "SYSLOG",  "/", SyslogRequestProc, NULL, srvPtr, 0);
 
     } else {
-        if (srvPtr->opts == NS_DRIVER_UNIX) {
+        if (srvPtr->opts & NS_DRIVER_UNIX) {
             srvPtr->sock = Ns_SockListenUnix(srvPtr->address, 0, 0666);
         } else {
             srvPtr->sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port);
         }
         if (srvPtr->sock == -1) {
             Ns_Log(Error, "nssyslogd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
-        } else {
-            Ns_SockCallback(srvPtr->sock, SyslogSockProc, srvPtr, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
-            Ns_Log(Notice, "%s: listening on %s:%d %s", module, srvPtr->address, srvPtr->port,
-                   srvPtr->proc ? srvPtr->proc : "");
+            ns_free(srvPtr);
+            return NS_ERROR;
         }
+        Ns_SockCallback(srvPtr->sock, SyslogSockProc, srvPtr, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
+        Ns_Log(Notice, "%s: listening on %s:%d with proc <%s>", module, srvPtr->address, srvPtr->port,
+                   srvPtr->proc ? srvPtr->proc : "");
     }
 
     /*
@@ -330,14 +334,17 @@ static int SyslogInterpInit(Tcl_Interp * interp, void *arg)
 static int SyslogSockProc(SOCKET sock, void *arg, int why)
 {
     SyslogServer *server = (SyslogServer*)arg;
+    struct sockaddr_in sa;
     SyslogRequest *req;
     char buffer[2048];
+    int len;
 
     if (why != NS_SOCK_READ) {
         close(sock);
         return NS_FALSE;
     }
-    req = SyslogRequestCreate(server, sock, buffer, sizeof(buffer));
+    len = SyslogRequestRead(server, sock, buffer, sizeof(buffer), &sa);
+    req = SyslogRequestCreate(server, sock, buffer, len, &sa);
     if (req != NULL) {
         SyslogRequestProcess(req);
         ns_free(req);
@@ -364,31 +371,20 @@ static int SyslogSockProc(SOCKET sock, void *arg, int why)
 static int SyslogDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int nbufs)
 {
     SyslogServer *server = (SyslogServer*)sock->driver->arg;
-    SyslogRequest *req;
-    Ns_DString *ds;
 
     switch (cmd) {
-     case DriverAccept:
+     case DriverQueue:
+
          /*
-          * Read the packet and store it in the request buffer, registered proc
-          * then will use that data for processing
+          *  Assign request line so our registered proc will be called
           */
 
-         if (Ns_DriverSockRequest(sock, "SYSLOG / SYSLOG/1.0") == NS_OK) {
-             /* Allocate enough space in the socket request buffer */
-             ds = Ns_DriverSockContent(sock);
-             Tcl_DStringSetLength(ds, 2048);
-             /* Read the data from the socket and fill the structure */
-             req = SyslogRequestCreate(server, sock->sock, ds->string, ds->length);
-             if (req != NULL) {
-                 sock->sa = req->sa;
-                 sock->arg = req;
-                 return NS_OK;
-             }
-         }
-         return NS_FATAL;
+         return Ns_DriverSetRequest(sock, "SYSLOG / SYSLOG/1.0");
+         break;
 
      case DriverRecv:
+         return SyslogRequestRead(server, sock->sock, bufs->iov_base, bufs->iov_len, &sock->sa);
+         break;
 
      case DriverSend:
      case DriverKeep:
@@ -416,11 +412,18 @@ static int SyslogDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs,
 
 static int SyslogRequestProc(void *arg, Ns_Conn *conn)
 {
-    Ns_Sock *sock = Ns_ConnSockPtr(conn);
-    SyslogRequest *req = (SyslogRequest*)sock->arg;
+    Ns_DString *ds;
+    Ns_Sock *sockPtr;
+    SyslogRequest *req;
+    struct sockaddr_in sa;
+    SyslogServer *server = (SyslogServer*)arg;
 
+    ds = Ns_ConnSockContent(conn);
+    sockPtr = Ns_ConnSockPtr(conn);
+    sa = sockPtr->sa;
+
+    req = SyslogRequestCreate(server, sockPtr->sock, ds->string, ds->length, &sa);
     if (req != NULL) {
-        Ns_ConnSetPeer(conn, &req->sa);
         SyslogRequestProcess(req);
         ns_free(req);
     }
@@ -431,6 +434,37 @@ static int SyslogRequestProc(void *arg, Ns_Conn *conn)
  *----------------------------------------------------------------------
  *
  * SyslogRequestCreate --
+ *
+ *	Create request structure
+ *
+ * Results:
+ *	NS_TRUE
+ *
+ * Side effects:
+ *  	None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
+{
+    if (buffer != NULL && size > 0) {
+        SyslogRequest *req = ns_calloc(1, sizeof(SyslogRequest));
+        req->server = server;
+        req->buffer = buffer;
+        req->size = size;
+        req->sa = *sa;
+        req->severity.name = "none";
+        req->facility.name = "none";
+        return req;
+    }
+    return NULL;
+}
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * SyslogRequestRead --
  *
  *	Read syslog data from the socket
  *
@@ -443,35 +477,25 @@ static int SyslogRequestProc(void *arg, Ns_Conn *conn)
  *----------------------------------------------------------------------
  */
 
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size)
+static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
 {
-    SyslogRequest *req;
-    struct sockaddr_in sa;
+    int len;
     socklen_t salen = sizeof(struct sockaddr_in);
 
     if (server->opts & NS_DRIVER_UDP) {
-        size = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)&sa, (socklen_t*)&salen);
+        len = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)sa, (socklen_t*)&salen);
     } else {
-        size = recv(sock, buffer, size - 1, 0);
-        sa.sin_addr.s_addr = inet_addr("127.0.0.1");
+        len = recv(sock, buffer, size - 1, 0);
+        sa->sin_addr.s_addr = inet_addr("127.0.0.1");
     }
-
-    if (size <= 0) {
+    if (len <= 0) {
         if (server->errors >= 0 && server->errors++ < 10) {
-            Ns_Log(Error, "SyslogReqestCreate: %d: recv error: %s", sock, strerror(errno));
+            Ns_Log(Error, "SyslogRequestRead: %d: recv error: %s", sock, strerror(errno));
         }
-        return NULL;
+        return NS_ERROR;
     }
-    buffer[size] = 0;
-
-    req = ns_calloc(1, sizeof(SyslogRequest));
-    req->server = server;
-    req->buffer = buffer;
-    req->sa = sa;
-    req->size = size;
-    req->severity.name = "none";
-    req->facility.name = "none";
-    return req;
+    buffer[len] = 0;
+    return len;
 }
 
 /*
