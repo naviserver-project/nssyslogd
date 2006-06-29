@@ -8,13 +8,13 @@ This is NaviServer module that implements Syslog server
 
 
  Configuration
- 
+
    nsd.tcl
- 
+
    ns_section    ns/servers/server/modules
    ns_param      nssyslogd        nssyslogd.so
    ns_param      nssyslogd2       nssyslogd.so
- 
+
    ns_section    ns/servers/server/module/nsyslogd
    ns_param	 proc		syslog::server
 
@@ -25,27 +25,49 @@ This is NaviServer module that implements Syslog server
    ns_param	 globalmode	true
    ns_param	 threadmode	true
 
+
+   proc       - Tcl proc to call on message receive
+   threadmode - tells to use connection driver and queue
+                syslog messages to connection threads for
+                delivery, otherwise syslog uses socket callbacks
+                mechanism which is sequential
+
+   globalmode - in case of multiple syslog modules loaded, it tells to
+                reuse the same confiuration for log files, so 2 modules
+                one for /dev/log another for remote UDP on port 514 can
+                share the same log files and locks
+
  Usage
 
     ns_syslogd create logname logfile
       create named syslog file
-      
+
     ns_syslogd write msg
       write to the named syslog file
-    
+
     ns_syslogd list
       return list of all opened syslog files
-      
-    ns_syslogd send ?-facility f? ?-options o? -tag t? ?-facility f? message
+
+    ns_syslogd stat logname
+      return log statistics
+
+    ns_syslogd flush logname
+      flush given log
+
+    ns_syslogd roll logname
+      perform log rolling
+
+    ns_syslogd send ?-host h? ?-facility f? ?-options o? -tag t? ?-facility f? message
       send message to the syslog daemon using system call
- 
+
+      host        - remote host ip address or /dev/log
       facility    - kernel, cron, authpriv, mail, local0, local1, daemon, local2,
                     news, local3, local4, local5, local6, syslog, local7, auth, uucp, lpr, user
       options     - list with any of { CONS NDELAY PERROR PID ODELAY NOWAIT }
       tag         - prepended to every message, and is typically the program name
       priority    - info, alert, emerg, err, notice, warning, error, crit, debug
- 
+
  Authors
- 
+
      Vlad Seryakov vlad@crystalballinc.com
 

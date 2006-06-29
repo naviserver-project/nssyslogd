@@ -90,8 +90,17 @@ typedef struct _syslogServer {
 typedef struct _syslogRequest {
     SyslogServer *server;
     int size;
+    char *line;
     char *buffer;
     struct sockaddr_in sa;
+    struct {
+      int code;
+      char *name;
+    } facility;
+    struct {
+      int code;
+      char *name;
+    } severity;
 } SyslogRequest;
 
 typedef struct _syslogTls {
@@ -171,11 +180,12 @@ static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
 static void SyslogRollCallback(void *arg);
 static int SyslogRequestProc(void *arg, Ns_Conn *conn);
 static int SyslogRequestProcess(SyslogRequest *req);
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock);
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size);
 static Ns_DriverProc SyslogDriverProc;
 static Ns_SockProc SyslogSockProc;
 
-static Ns_Tls tls;
+static Ns_Tls logTls;
+static Ns_Tls reqTls;
 static SyslogConfig *globalConfig = NULL;
 
 NS_EXPORT int Ns_ModuleVersion = 1;
@@ -206,27 +216,25 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 
     if (!first) {
         first = 1;
-        Ns_TlsAlloc(&tls, SyslogFreeTls);
+        Ns_TlsAlloc(&logTls, SyslogFreeTls);
+        Ns_TlsAlloc(&reqTls, NULL);
     }
 
     path = Ns_ConfigGetPath(server, module, NULL);
     srvPtr = (SyslogServer *) ns_calloc(1, sizeof(SyslogServer));
     srvPtr->name = server;
-
-    Ns_ConfigGetBool(path, "drivermode", &srvPtr->drivermode);
-    Ns_ConfigGetBool(path, "globalmode", &srvPtr->globalmode);
+    srvPtr->opts = NS_DRIVER_UDP;
     srvPtr->port = Ns_ConfigIntRange(path, "port", 514, 1, 65535);
     srvPtr->proc = Ns_ConfigGetValue(path, "proc");
     srvPtr->rollhour = Ns_ConfigIntRange(path, "rollhour", 0, 0, 23);
     srvPtr->address = Ns_ConfigGetValue(path, "address");
-
+    Ns_ConfigGetBool(path, "drivermode", &srvPtr->drivermode);
+    Ns_ConfigGetBool(path, "globalmode", &srvPtr->globalmode);
     if (srvPtr->address == NULL) {
         srvPtr->address = "/dev/log";
     }
     if (Ns_PathIsAbsolute(srvPtr->address)) {
         srvPtr->opts = NS_DRIVER_UNIX;
-    } else {
-        srvPtr->opts = NS_DRIVER_UDP;
     }
 
     /* Configure Syslog listener */
@@ -323,12 +331,13 @@ static int SyslogSockProc(SOCKET sock, void *arg, int why)
 {
     SyslogServer *server = (SyslogServer*)arg;
     SyslogRequest *req;
+    char buffer[2048];
 
     if (why != NS_SOCK_READ) {
         close(sock);
         return NS_FALSE;
     }
-    req = SyslogRequestCreate(server, sock);
+    req = SyslogRequestCreate(server, sock, buffer, sizeof(buffer));
     if (req != NULL) {
         SyslogRequestProcess(req);
         ns_free(req);
@@ -356,6 +365,7 @@ static int SyslogDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs,
 {
     SyslogServer *server = (SyslogServer*)sock->driver->arg;
     SyslogRequest *req;
+    Ns_DString *ds;
 
     switch (cmd) {
      case DriverAccept:
@@ -365,7 +375,11 @@ static int SyslogDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs,
           */
 
          if (Ns_DriverSockRequest(sock, "SYSLOG / SYSLOG/1.0") == NS_OK) {
-             req = SyslogRequestCreate(server, sock->sock);
+             /* Allocate enough space in the socket request buffer */
+             ds = Ns_DriverSockContent(sock);
+             Tcl_DStringSetLength(ds, 2048);
+             /* Read the data from the socket and fill the structure */
+             req = SyslogRequestCreate(server, sock->sock, ds->string, ds->length);
              if (req != NULL) {
                  sock->sa = req->sa;
                  sock->arg = req;
@@ -374,10 +388,11 @@ static int SyslogDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs,
          }
          return NS_FATAL;
 
-     case DriverClose:
      case DriverRecv:
+
      case DriverSend:
      case DriverKeep:
+     case DriverClose:
          break;
     }
     return NS_ERROR;
@@ -409,7 +424,7 @@ static int SyslogRequestProc(void *arg, Ns_Conn *conn)
         SyslogRequestProcess(req);
         ns_free(req);
     }
-    return NS_OK;
+    return NS_FILTER_BREAK;
 }
 
 /*
@@ -428,37 +443,34 @@ static int SyslogRequestProc(void *arg, Ns_Conn *conn)
  *----------------------------------------------------------------------
  */
 
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock)
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size)
 {
-    int size;
-    char buffer[1024];
     SyslogRequest *req;
     struct sockaddr_in sa;
     socklen_t salen = sizeof(struct sockaddr_in);
 
     if (server->opts & NS_DRIVER_UDP) {
-        if ((size = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *) &sa, &salen)) <= 0) {
-            if (server->errors >= 0 && server->errors++ < 10) {
-                Ns_Log(Error, "SyslogProc: %d: recvfrom error: %s", sock, strerror(errno));
-            }
-            return NULL;
-        }
+        size = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)&sa, (socklen_t*)&salen);
     } else {
-        if ((size = recv(sock, buffer, sizeof(buffer) - 1, 0)) <= 0) {
-            if (server->errors >= 0 && server->errors++ < 10) {
-
-            Ns_Log(Error, "SyslogProc: %d: recv error: %s", sock, strerror(errno));
-            }
-            return NULL;
-        }
+        size = recv(sock, buffer, size - 1, 0);
         sa.sin_addr.s_addr = inet_addr("127.0.0.1");
     }
+
+    if (size <= 0) {
+        if (server->errors >= 0 && server->errors++ < 10) {
+            Ns_Log(Error, "SyslogReqestCreate: %d: recv error: %s", sock, strerror(errno));
+        }
+        return NULL;
+    }
     buffer[size] = 0;
-    req = ns_malloc(sizeof(SyslogRequest));
+
+    req = ns_calloc(1, sizeof(SyslogRequest));
     req->server = server;
-    req->buffer = ns_strdup(buffer);
-    req->size = size;
+    req->buffer = buffer;
     req->sa = sa;
+    req->size = size;
+    req->severity.name = "none";
+    req->facility.name = "none";
     return req;
 }
 
@@ -481,65 +493,64 @@ static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock)
 static int SyslogRequestProcess(SyslogRequest *req)
 {
     SyslogServer *server = req->server;
-    int i, rc, priority = -1, iFacility = 0, iSeverity = 0;
-    char *buf, *ptr, *res = 0, *sFacility = "none", *sSeverity = "none";
+    int i, rc, priority = -1;
 
-    ptr = buf = req->buffer;
+    req->line = req->buffer;
     /* Parse priority */
-    if (*ptr == '<') {
-        priority = atoi(++ptr);
-        while (isdigit(*ptr)) {
-            ptr++;
+    if (*req->line == '<') {
+        priority = atoi(++req->line);
+        while (isdigit(*req->line)) {
+            req->line++;
         }
-        if (*ptr != '>') {
+        if (*req->line != '>') {
             return NS_TRUE;
         }
-        ptr++;
+        req->line++;
     }
-    iFacility = LOG_FAC(priority)<<3;
-    iSeverity = LOG_PRI(priority);
+    req->facility.code = LOG_FAC(priority)<<3;
+    req->severity.code = LOG_PRI(priority);
     /* Parse timestamp: Mon dd hh:mm:ss */
-    while (*ptr && !isspace(*ptr++));
-    while (*ptr && !isspace(*ptr++));
-    while (*ptr && !isspace(*ptr++));
+    while (*req->line && !isspace(*req->line++));
+    while (*req->line && !isspace(*req->line++));
+    while (*req->line && !isspace(*req->line++));
     /* Bad line, ignore it */
-    if (!*ptr) {
+    if (!*req->line) {
         return NS_TRUE;
     }
     /* Format the message */
     for (i = 0; syslogFacilities[i].key; i++) {
-        if (iFacility == syslogFacilities[i].value) {
-            sFacility = syslogFacilities[i].key;
+        if (req->facility.code == syslogFacilities[i].value) {
+            req->facility.name = syslogFacilities[i].key;
             break;
         }
     }
     for (i = 0; syslogSeverities[i].key; i++) {
-        if (iSeverity == syslogSeverities[i].value) {
-            sSeverity = syslogSeverities[i].key;
+        if (req->severity.code == syslogSeverities[i].value) {
+            req->severity.name = syslogSeverities[i].key;
             break;
         }
     }
     if (server->proc) {
         Tcl_Interp *interp = Ns_TclAllocateInterp(server->name);
         if (interp) {
-            rc = Tcl_VarEval(interp, server->proc, " ",
-                             ns_inet_ntoa(req->sa.sin_addr), " ",
-                             sSeverity, " ", sFacility, " {", ptr, "}", NULL);
+            Ns_TlsSet(&reqTls, req);
+            rc = Tcl_EvalEx(interp, server->proc, -1, 0);
             if (rc != TCL_OK) {
                 Ns_TclLogError(interp);
             } else {
-                res = (char *) Tcl_GetStringResult(interp);
+                char *res = (char *) Tcl_GetStringResult(interp);
                 if (res && *res) {
                     rc = TCL_ERROR;
                 }
             }
+            Ns_TlsSet(&reqTls, NULL);
             Ns_TclDeAllocateInterp(interp);
             if (rc != TCL_OK) {
                 return NS_TRUE;
             }
         }
     }
-    Ns_Log(Notice, "%s/%s: %s", sFacility, sSeverity, ptr);
+    Ns_Log(Notice, "%s/%s: %s", req->facility.name, req->severity.name, req->line);
     return NS_TRUE;
 }
 
@@ -562,16 +573,24 @@ static int SyslogRequestProcess(SyslogRequest *req)
 static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[])
 {
     SyslogServer *srvPtr = (SyslogServer *) arg;
+    SyslogRequest *req;
     SyslogFile *logPtr;
     char *str = NULL;
-    Tcl_Obj *path;
+    Tcl_Obj *strPtr;
     int status, cmd;
 
     enum {
-        cmdWrite, cmdCreate, cmdRoll, cmdList, cmdStat, cmdFlush, cmdSend
+        cmdWrite, cmdCreate, cmdRoll, cmdList, cmdStat, cmdFlush, cmdSend, cmdReq
     };
     static CONST char *subcmd[] = {
-        "write", "create", "roll", "list", "stat", "flush", "send",
+        "write", "create", "roll", "list", "stat", "flush", "send", "req",
+        NULL
+    };
+    enum {
+        reqArray, reqLine, reqPeeraddr, reqFacility, reqSeverity
+    };
+    static CONST char *reqcmd[] = {
+        "array", "line", "peeraddr", "facility", "severity",
         NULL
     };
 
@@ -587,6 +606,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
     switch (cmd) {
     case cmdCreate: {
         SyslogFile *logPtr = (SyslogFile *) ns_calloc(1, sizeof(SyslogFile));
+
         Ns_ObjvSpec crOpts[] = {
             {"-maxbackup", Ns_ObjvInt,    &logPtr->maxbackup, NULL},
             {"-maxlines",  Ns_ObjvInt,    &logPtr->maxlines,  NULL},
@@ -691,10 +711,10 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
             if (Tcl_FSAccess(objv[2], F_OK) == 0) {
                 status = Ns_RollFile(str, logPtr->maxbackup);
             } else {
-                path = Tcl_NewStringObj(logPtr->file, -1);
-                Tcl_IncrRefCount(path);
-                status = Tcl_FSRenameFile(path, objv[2]);
-                Tcl_DecrRefCount(path);
+                strPtr = Tcl_NewStringObj(logPtr->file, -1);
+                Tcl_IncrRefCount(strPtr);
+                status = Tcl_FSRenameFile(strPtr, objv[2]);
+                Tcl_DecrRefCount(strPtr);
                 if (status != 0) {
                     status = NS_ERROR;
                 } else {
@@ -735,6 +755,45 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         SyslogSend(severity, str);
         break;
       }
+
+    case cmdReq:
+        req = Ns_TlsGet(&reqTls);
+        if (req == NULL) {
+            break;
+        }
+        if (objc > 2) {
+            if (Tcl_GetIndexFromObj(interp, objv[2], reqcmd, "option", 0, &cmd) != TCL_OK) {
+                return TCL_ERROR;
+            }
+        }
+        strPtr = Tcl_NewObj();
+        switch (cmd) {
+        case reqArray:
+            Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(ns_inet_ntoa(req->sa.sin_addr), -1));
+            Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(req->facility.name, -1));
+            Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(req->severity.name, -1));
+            Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(req->line, -1));
+            break;
+
+        case reqPeeraddr:
+            Tcl_SetStringObj(strPtr, ns_inet_ntoa(req->sa.sin_addr), -1);
+            break;
+
+        case reqFacility:
+            Tcl_SetStringObj(strPtr, req->facility.name, -1);
+            break;
+
+        case reqSeverity:
+            Tcl_SetStringObj(strPtr, req->severity.name, -1);
+            break;
+
+        case reqLine:
+        default:
+            Tcl_SetStringObj(strPtr, req->line, -1);
+            break;
+        }
+        Tcl_SetObjResult(interp, strPtr);
+        break;
     }
     return TCL_OK;
 }
@@ -916,7 +975,7 @@ static void SyslogWrite(SyslogFile * logPtr, char *str)
 
 static SyslogTls *SyslogGetTls(void)
 {
-    SyslogTls *log = Ns_TlsGet(&tls);
+    SyslogTls *log = Ns_TlsGet(&logTls);
 
     if (log == NULL) {
         log = ns_calloc(1, sizeof(SyslogTls));
@@ -925,7 +984,7 @@ static SyslogTls *SyslogGetTls(void)
         log->facility = LOG_USER;
         log->tag = ns_strdup("nsd");
         log->path = ns_strdup("/dev/log");
-        Ns_TlsSet(&tls, log);
+        Ns_TlsSet(&logTls, log);
     }
     return log;
 }
