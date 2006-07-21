@@ -105,6 +105,7 @@ typedef struct _syslogRequest {
 
 typedef struct _syslogTls {
     int      sock;                /* fd for log */
+    int      port;                /* port for remote syslog */
     int      connected;           /* have done connect */
     int      options;             /* status bits, set by openlog() */
     char     *tag;                /* string to tag the entry with */
@@ -1008,6 +1009,7 @@ static SyslogTls *SyslogGetTls(void)
         log->facility = LOG_USER;
         log->tag = ns_strdup("nsd");
         log->path = ns_strdup("/dev/log");
+        log->port = 514;
         Ns_TlsSet(&logTls, log);
     }
     return log;
@@ -1025,7 +1027,6 @@ static void SyslogFreeTls(void *arg)
 static void SyslogInit(const char *path, const char *tag, int options, int facility)
 {
     SyslogTls *log = SyslogGetTls();
-    struct sockaddr un;
     int changed = 0;
 
     if (path != NULL && strcmp(path, log->path)) {
@@ -1051,15 +1052,34 @@ static void SyslogInit(const char *path, const char *tag, int options, int facil
     }
 
     if (log->sock == -1) {
-        un.sa_family = AF_UNIX;
-        strncpy(un.sa_data, log->path, sizeof(un.sa_data));
-        if (log->options & LOG_NDELAY) {
-            log->sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (Ns_PathIsAbsolute(log->path)) {
+            struct sockaddr un;
+            un.sa_family = AF_UNIX;
+            strncpy(un.sa_data, log->path, sizeof(un.sa_data));
+            if (log->options & LOG_NDELAY) {
+                log->sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+            }
+            if (log->sock != -1 && !log->connected &&
+                connect(log->sock, &un, sizeof(un.sa_family)+strlen(un.sa_data)) != -1) {
+                log->connected = 1;
+            }
+        } else {
+            struct sockaddr_in sa;
+            char *ptr = strchr(log->path, ':');
+            if (ptr != NULL) {
+                *ptr++ = 0;
+                log->port = atoi(ptr);
+            }
+            if (Ns_GetSockAddr(&sa, log->path, log->port) == NS_OK) {
+                if (log->options & LOG_NDELAY) {
+                    log->sock = socket(AF_INET, SOCK_DGRAM, 0);
+                }
+            }
+            if (log->sock != -1 && !log->connected &&
+                connect(log->sock, (struct sockaddr*)&sa, sizeof(sa)) != -1) {
+                log->connected = 1;
+            }
         }
-    }
-    if (log->sock != -1 && !log->connected &&
-        connect(log->sock, &un, sizeof(un.sa_family)+strlen(un.sa_data)) != -1) {
-        log->connected = 1;
     }
 }
 
