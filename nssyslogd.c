@@ -486,12 +486,13 @@ static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, in
     if (server->opts & NS_DRIVER_UDP) {
         len = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)sa, (socklen_t*)&salen);
     } else {
-        len = recv(sock, buffer, size - 1, 0);
         sa->sin_addr.s_addr = inet_addr("127.0.0.1");
+        len = recv(sock, buffer, size - 1, 0);
     }
     if (len <= 0) {
         if (server->errors >= 0 && server->errors++ < 10) {
-            Ns_Log(Error, "SyslogRequestRead: %d: recv error: %s", sock, strerror(errno));
+            Ns_Log(Error, "SyslogRequestRead: %d: %s recv error: %d bytes, %s",
+                   sock, server->opts & NS_DRIVER_UDP ? "udp" : "tcp", len, strerror(errno));
         }
         return NS_ERROR;
     }
