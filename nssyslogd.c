@@ -543,6 +543,9 @@ static int SyslogRequestProcess(SyslogRequest *req)
     if (!*req->line) {
         return NS_TRUE;
     }
+    for (i = strlen(req->line) - 1; i > 0 && isspace(req->line[i]); i--) {
+        req->line[i] = 0;
+    }
     /* Format the message */
     for (i = 0; syslogFacilities[i].key; i++) {
         if (req->facility.code == syslogFacilities[i].value) {
