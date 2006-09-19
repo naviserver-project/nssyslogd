@@ -490,7 +490,7 @@ static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, in
         len = recv(sock, buffer, size - 1, 0);
     }
     if (len <= 0) {
-        if (server->errors >= 0 && server->errors++ < 10) {
+        if (errno && server->errors >= 0 && server->errors++ < 10) {
             Ns_Log(Error, "SyslogRequestRead: %d: %s recv error: %d bytes, %s",
                    sock, server->opts & NS_DRIVER_UDP ? "udp" : "tcp", len, strerror(errno));
         }
