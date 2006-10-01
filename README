@@ -33,14 +33,30 @@ This is NaviServer module that implements Syslog server
                 mechanism which is sequential
 
    globalmode - in case of multiple syslog modules loaded, it tells to
-                reuse the same confiuration for log files, so 2 modules
+                reuse the same configuration for log files, so 2 modules
                 one for /dev/log another for remote UDP on port 514 can
                 share the same log files and locks
 
  Usage
 
-    ns_syslogd create logname logfile
+    ns_syslogd create ?-maxbackup maxbackup? ?-maxlines maxlines? ?-rollfmt rollfmt? ?-map map? logname logfile
       create named syslog file
+
+      maxbackup - how many log files to keep
+      maxlines  - how many lines to keep in the buffer before flush to disk
+      rollfmt   - format of log file using stftime formatting rules
+      map       - list of facility[.severity] codes that apply to this
+                  log, server will match them and write automatically. This
+                  works only if no proc Tcl script is specified in the nsd.tcl
+                  file for this driver
+
+                  Format is: facility or facility.severity
+
+                  where severity can be none or actual severity name, without
+                        it all lines with given facility will be matched for all
+                        severity codes, without facility, severity applies to all
+
+                  -map { daemon mail.alert local6 local7.none .info }
 
     ns_syslogd write msg
       write to the named syslog file

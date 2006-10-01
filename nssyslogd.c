@@ -65,12 +65,17 @@ typedef struct _syslogFile {
     unsigned long writtenlines;
     Ns_Mutex lock;
     Ns_DString buffer;
+    struct {
+      char *string;
+      char flags[LOG_NFACILITIES][LOG_DEBUG];
+    } map;
 } SyslogFile;
 
 typedef struct _syslogConfig {
     Ns_Mutex mutex;
     Ns_DString buffer;
     SyslogFile *files;
+    short maps;
 } SyslogConfig;
 
 typedef struct _syslogServer {
@@ -170,6 +175,7 @@ static void SyslogSendV(int severity, const char *fmt, va_list ap);
 static int SyslogInterpInit(Tcl_Interp * interp, void *arg);
 static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[]);
 static SyslogFile *SyslogFind(SyslogServer * srvPtr, const char *name);
+static SyslogFile *SyslogFindMap(SyslogServer * srvPtr, unsigned int facility, unsigned int priority);
 static int SyslogOpen(SyslogFile * logPtr);
 static int SyslogClose(SyslogFile * logPtr);
 static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr);
@@ -188,6 +194,7 @@ static Ns_SockProc SyslogSockProc;
 
 static Ns_Tls logTls;
 static Ns_Tls reqTls;
+static int maxFacility = 0;
 static SyslogConfig *globalConfig = NULL;
 
 NS_EXPORT int Ns_ModuleVersion = 1;
@@ -217,9 +224,12 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     static int first = 0;
 
     if (!first) {
-        first = 1;
+        for (first = 0; syslogFacilities[first].key; first++) {
+             maxFacility = MAX(maxFacility, syslogFacilities[first].value);
+        }
         Ns_TlsAlloc(&logTls, SyslogFreeTls);
         Ns_TlsAlloc(&reqTls, NULL);
+        first = 1;
     }
 
     path = Ns_ConfigGetPath(server, module, NULL);
@@ -271,7 +281,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         Ns_Log(Notice, "%s: listening on %s:%d with proc <%s>", module, srvPtr->address, srvPtr->port,
                    srvPtr->proc ? srvPtr->proc : "");
     }
-
+    Ns_Log(Notice, "%p: created %s:%d", srvPtr,srvPtr->address, srvPtr->port);
     /*
      *  In global mode all modules are linked to the same files and buffers
      *  which will allow multiple servers listening on different ports, like
@@ -518,7 +528,7 @@ static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, in
 
 static int SyslogRequestProcess(SyslogRequest *req)
 {
-    SyslogServer *server = req->server;
+    SyslogServer *srvPtr = req->server;
     int i, rc, priority = -1;
 
     req->line = req->buffer;
@@ -559,11 +569,17 @@ static int SyslogRequestProcess(SyslogRequest *req)
             break;
         }
     }
-    if (server->proc) {
-        Tcl_Interp *interp = Ns_TclAllocateInterp(server->name);
+
+    /*
+     *  Global syslog script is enabled, call it and let him write the actual lines,
+     *  if it returns nothing, then just write the line into our nsd.log
+     */
+
+    if (srvPtr->proc) {
+        Tcl_Interp *interp = Ns_TclAllocateInterp(srvPtr->name);
         if (interp) {
             Ns_TlsSet(&reqTls, req);
-            rc = Tcl_EvalEx(interp, server->proc, -1, 0);
+            rc = Tcl_EvalEx(interp, srvPtr->proc, -1, 0);
             if (rc != TCL_OK) {
                 Ns_TclLogError(interp);
             } else {
@@ -578,6 +594,21 @@ static int SyslogRequestProcess(SyslogRequest *req)
                 return NS_TRUE;
             }
         }
+    } else
+
+    /*
+     * If automatic mapping is configured on the server, find the log file by facility.severity
+     * and write line there
+     */
+
+    if (srvPtr->config->maps) {
+      SyslogFile *logPtr = SyslogFindMap(srvPtr, req->facility.code, req->severity.code);
+      if (logPtr) {
+          Ns_MutexLock(&logPtr->lock);
+          SyslogWrite(logPtr, req->line);
+          Ns_MutexUnlock(&logPtr->lock);
+          return NS_TRUE;
+      }
     }
     Ns_Log(Notice, "%s/%s: %s", req->facility.name, req->severity.name, req->line);
     return NS_TRUE;
@@ -637,9 +668,10 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         SyslogFile *logPtr = (SyslogFile *) ns_calloc(1, sizeof(SyslogFile));
 
         Ns_ObjvSpec crOpts[] = {
-            {"-maxbackup", Ns_ObjvInt,    &logPtr->maxbackup, NULL},
-            {"-maxlines",  Ns_ObjvInt,    &logPtr->maxlines,  NULL},
-            {"-rollfmt",   Ns_ObjvString, &logPtr->rollfmt,   NULL},
+            {"-maxbackup", Ns_ObjvInt,    &logPtr->maxbackup,  NULL},
+            {"-maxlines",  Ns_ObjvInt,    &logPtr->maxlines,   NULL},
+            {"-rollfmt",   Ns_ObjvString, &logPtr->rollfmt,    NULL},
+            {"-map",       Ns_ObjvString, &str,                NULL},
             {"--",         Ns_ObjvBreak,  NULL,    NULL},
             {NULL, NULL, NULL, NULL}
         };
@@ -655,6 +687,90 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         if (Ns_ParseObjv(crOpts, crArgs, interp, 2, objc, objv) != NS_OK) {
             ns_free(logPtr);
             return TCL_ERROR;
+        }
+        if (str != NULL) {
+            CONST char **argv;
+            char *fname, *sname;
+            int i, j, argc, ok, fmax, fcode, scode;
+
+            /*
+             *  map is a list of facility[.severity] codes that apply to this
+             *  log, server will match them and write automatically.
+             *  Format is: facility or facility.severity
+             *    where severity can be none or actual severity name, without
+             *          it all lines with given facility will be matched for all
+             *          severity codes, without facility, severity applies to all
+             *
+             *     -map { daemon mail.alert local6 local7.none .info }
+             */
+
+            if (Tcl_SplitList(NULL, str, &argc, &argv) != TCL_OK) {
+                Ns_Log(Error,"nssyslog: %s: invalid map parameter: %s", logPtr->name, logPtr->map.string);
+                ns_free(logPtr);
+                return TCL_ERROR;
+            }
+            for (i = 0; i < argc; i++) {
+                 ok = 1;
+                 fmax = fcode = scode = -1;
+                 fname = (char*)argv[i];
+                 sname = strchr(fname, '.');
+
+                 /*
+                  * Split facility.severity
+                  */
+
+                 if (sname != NULL) {
+
+                     /*
+                      * Use all syslog facilities
+                      */
+
+                     if (sname == fname) {
+                         fname = NULL;
+                         fcode = 0;
+                         fmax = maxFacility;
+                     }
+                     *sname++ = 0;
+                     if (!strcasecmp(sname, "none")) {
+                         ok = 0;
+                         scode = LOG_DEBUG;
+                     }
+                 } else {
+                     scode = LOG_DEBUG;
+                 }
+
+                 for (j = 0; fname && syslogFacilities[j].key; j++) {
+                     if (!strcasecmp(fname, syslogFacilities[j].key)) {
+                         fmax = fcode = syslogFacilities[j].value;
+                         fmax++;
+                         break;
+                     }
+                 }
+                 for (j = 0; sname && syslogSeverities[j].key; j++) {
+                     if (!strcasecmp(sname, syslogSeverities[j].key)) {
+                         scode = syslogSeverities[j].value;
+                         break;
+                     }
+                 }
+
+                 if ((fname && fcode == -1) || (sname && scode == -1)) {
+                     Ns_Log(Error, "nssyslog: %s: invalid facility.priority: %s.%s", logPtr->name, fname, sname);
+                     continue;
+                 }
+
+                 /*
+                  * Assign all facilities and severities in the mapping table
+                  */
+                 srvPtr->config->maps++;
+
+                 while (fcode <= fmax) {
+                     for (j = 0; j <= scode; j++) {
+                         logPtr->map.flags[fcode][j] = ok;
+                     }
+                     fcode++;
+                 }
+            }
+            Tcl_Free((char *)argv);
         }
 
         Ns_DStringInit(&logPtr->buffer);
@@ -681,7 +797,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         break;
 
     case cmdStat:
-        if (objc < 4) {
+        if (objc < 3) {
             Tcl_WrongNumArgs(interp, 2, objv, "name");
             return TCL_ERROR;
         }
@@ -708,11 +824,13 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         if (!logPtr) {
             break;
         }
+        Ns_MutexLock(&logPtr->lock);
         SyslogWrite(logPtr, Tcl_GetString(objv[3]));
+        Ns_MutexUnlock(&logPtr->lock);
         break;
 
     case cmdFlush:
-        if (objc < 4) {
+        if (objc < 3) {
             Tcl_WrongNumArgs(interp, 2, objv, "name args");
             return TCL_ERROR;
         }
@@ -720,7 +838,9 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         if (!logPtr) {
             break;
         }
+        Ns_MutexLock(&logPtr->lock);
         SyslogWrite(logPtr, 0);
+        Ns_MutexUnlock(&logPtr->lock);
         break;
 
     case cmdRoll:
@@ -831,11 +951,33 @@ static SyslogFile *SyslogFind(SyslogServer * srvPtr, const char *name)
 {
     SyslogFile *logPtr;
 
+    Ns_MutexLock(&srvPtr->config->mutex);
     for (logPtr = srvPtr->config->files; logPtr; logPtr = logPtr->nextPtr) {
         if (!strcasecmp(name, logPtr->name)) {
             break;
         }
     }
+    Ns_MutexUnlock(&srvPtr->config->mutex);
+    return logPtr;
+}
+
+static SyslogFile *SyslogFindMap(SyslogServer * srvPtr, unsigned int facility, unsigned int severity)
+{
+    SyslogFile *logPtr;
+
+    Ns_Log(Notice, "find %p: %d/%d %d/%d", srvPtr, facility, maxFacility, severity, LOG_DEBUG);
+
+    if (facility > maxFacility || severity > LOG_DEBUG) {
+        return NULL;
+    }
+
+    Ns_MutexLock(&srvPtr->config->mutex);
+    for (logPtr = srvPtr->config->files; logPtr; logPtr = logPtr->nextPtr) {
+        if (logPtr->map.flags[facility][severity]) {
+            break;
+        }
+    }
+    Ns_MutexUnlock(&srvPtr->config->mutex);
     return logPtr;
 }
 
@@ -988,7 +1130,6 @@ static void SyslogRollCallback(void *arg)
 
 static void SyslogWrite(SyslogFile * logPtr, char *str)
 {
-    Ns_MutexLock(&logPtr->lock);
     if (str) {
         Ns_DStringAppend(&logPtr->buffer, str);
         Ns_DStringAppend(&logPtr->buffer, "\n");
@@ -999,7 +1140,6 @@ static void SyslogWrite(SyslogFile * logPtr, char *str)
         logPtr->writtenlines += logPtr->curlines;
         logPtr->curlines = 0;
     }
-    Ns_MutexUnlock(&logPtr->lock);
 }
 
 static SyslogTls *SyslogGetTls(void)

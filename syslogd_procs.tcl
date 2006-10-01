@@ -10,9 +10,9 @@ ns_schedule_proc -once 0 syslog::init
 # Global Syslog initialization
 proc syslog::init {} {
 
-    #ns_syslogd create mailog [ns_info home]/logs/mail.log
-    #ns_syslogd create authlog [ns_info home]/logs/auth.log
-    #ns_syslogd create syslog [ns_info home]/logs/syslog.log
+    #ns_syslogd create -map { mail } mailog [ns_info home]/logs/mail.log
+    #ns_syslogd create -map { auth } authlog [ns_info home]/logs/auth.log
+    #ns_syslogd create -map { .info mail.none auth.none } syslog [ns_info home]/logs/syslog.log
 }
 
 # Syslog handler
