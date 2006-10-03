@@ -246,8 +246,6 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     }
     if (Ns_PathIsAbsolute(srvPtr->address)) {
         srvPtr->opts = NS_DRIVER_UNIX;
-    } else {
-        srvPtr->opts = NS_DRIVER_UDP;
     }
 
     /* Configure Syslog listener */
@@ -255,10 +253,11 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         init.version = NS_DRIVER_VERSION_1;
         init.name = "nssyslog";
         init.proc = SyslogDriverProc;
-        init.opts = NS_DRIVER_QUEUE_ONREAD|NS_DRIVER_ASYNC;
+        init.opts = NS_DRIVER_UDP|NS_DRIVER_QUEUE_ONREAD|NS_DRIVER_ASYNC;
         init.opts |= srvPtr->opts;
         init.arg = srvPtr;
         init.path = NULL;
+
         if (Ns_DriverInit(server, module, &init) != NS_OK) {
             Ns_Log(Error, "%s: driver init failed", module);
             ns_free(srvPtr);
@@ -281,7 +280,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         Ns_Log(Notice, "%s: listening on %s:%d with proc <%s>", module, srvPtr->address, srvPtr->port,
                    srvPtr->proc ? srvPtr->proc : "");
     }
-    Ns_Log(Notice, "%p: created %s:%d", srvPtr,srvPtr->address, srvPtr->port);
+
     /*
      *  In global mode all modules are linked to the same files and buffers
      *  which will allow multiple servers listening on different ports, like
