@@ -5,7 +5,9 @@ namespace eval syslog {
 
 }
 
-ns_schedule_proc -once 0 syslog::init
+if { [info command ns_syslogd] != "" } {
+  ns_schedule_proc -once 0 syslog::init
+}
 
 # Global Syslog initialization
 proc syslog::init {} {
