@@ -11,14 +11,16 @@ This is NaviServer module that implements Syslog server
 
    nsd.tcl
 
-   ns_section    ns/servers/server/modules
+   ns_section    ns/server/$server/modules
    ns_param      nssyslogd        nssyslogd.so
    ns_param      nssyslogd2       nssyslogd.so
 
-   ns_section    ns/servers/server/module/nsyslogd
+   # Local syslog server
+   ns_section    ns/server/$server/module/nssyslogd
    ns_param	 proc		syslog::server
 
-   ns_section    ns/servers/server/module/nsyslogd2
+   # Syslog accepting logs from the network
+   ns_section    ns/server/$server/module/nssyslogd2
    ns_param      address    	0.0.0.0
    ns_param      port      	514
    ns_param	 proc		syslog::server
