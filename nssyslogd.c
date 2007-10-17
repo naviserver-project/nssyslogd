@@ -97,6 +97,7 @@ typedef struct _syslogRequest {
     int size;
     char *line;
     char *buffer;
+    char *timestamp;
     struct sockaddr_in sa;
     struct {
       int code;
@@ -180,7 +181,7 @@ static int SyslogOpen(SyslogFile * logPtr);
 static int SyslogClose(SyslogFile * logPtr);
 static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr);
 static int SyslogRoll(SyslogFile * logPtr);
-static void SyslogWrite(SyslogFile * logPtr, char *str);
+static void SyslogWrite(SyslogFile * logPtr, char *line, char *timestamp);
 static void SyslogFree(SyslogFile * logPtr);
 static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc);
 static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
@@ -545,6 +546,7 @@ static int SyslogRequestProcess(SyslogRequest *req)
     req->facility.code = LOG_FAC(priority)<<3;
     req->severity.code = LOG_PRI(priority);
     /* Parse timestamp: Mon dd hh:mm:ss */
+    req->timestamp = req->line;
     while (*req->line && !isspace(*req->line++));
     while (*req->line && !isspace(*req->line++));
     while (*req->line && !isspace(*req->line++));
@@ -601,13 +603,13 @@ static int SyslogRequestProcess(SyslogRequest *req)
      */
 
     if (srvPtr->config->maps) {
-      SyslogFile *logPtr = SyslogFindMap(srvPtr, req->facility.code, req->severity.code);
-      if (logPtr) {
-          Ns_MutexLock(&logPtr->lock);
-          SyslogWrite(logPtr, req->line);
-          Ns_MutexUnlock(&logPtr->lock);
-          return NS_TRUE;
-      }
+        SyslogFile *logPtr = SyslogFindMap(srvPtr, req->facility.code, req->severity.code);
+        if (logPtr) {
+            Ns_MutexLock(&logPtr->lock);
+            SyslogWrite(logPtr, req->line, req->timestamp);
+            Ns_MutexUnlock(&logPtr->lock);
+            return NS_TRUE;
+        }
     }
     Ns_Log(Notice, "%s/%s: %s", req->facility.name, req->severity.name, req->line);
     return NS_TRUE;
@@ -636,7 +638,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
     SyslogFile *logPtr;
     char *str = NULL;
     Tcl_Obj *strPtr;
-    int status, cmd;
+    int i, j, status, cmd;
 
     enum {
         cmdWrite, cmdCreate, cmdRoll, cmdList, cmdStat, cmdFlush, cmdSend, cmdReq
@@ -646,7 +648,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         NULL
     };
     enum {
-        reqArray, reqLine, reqPeeraddr, reqFacility, reqSeverity
+        reqArray, reqLine, reqFullLine, reqPeeraddr, reqFacility, reqSeverity
     };
     static CONST char *reqcmd[] = {
         "array", "line", "peeraddr", "facility", "severity",
@@ -690,7 +692,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         if (str != NULL) {
             CONST char **argv;
             char *fname, *sname;
-            int i, j, argc, ok, fmax, fcode, scode;
+            int argc, ok, fmax, fcode, scode;
 
             /*
              *  map is a list of facility[.severity] codes that apply to this
@@ -790,7 +792,14 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
     case cmdList:
         Ns_MutexLock(&srvPtr->config->mutex);
         for (logPtr = srvPtr->config->files; logPtr; logPtr = logPtr->nextPtr) {
-            Tcl_AppendResult(interp, logPtr->name, " ", 0);
+            Tcl_AppendResult(interp, logPtr->name, " {", NULL);
+            for (i = 0; i < LOG_NFACILITIES; i++) {
+                for (j = 0; j < LOG_DEBUG; j++) {
+                    if (logPtr->map.flags[i][j])
+                        Tcl_AppendResult(interp, syslogFacilities[i].key, "/", syslogSeverities[j].key, " ", NULL);
+                }
+            }
+            Tcl_AppendResult(interp, "} ", NULL);
         }
         Ns_MutexUnlock(&srvPtr->config->mutex);
         break;
@@ -816,7 +825,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
 
     case cmdWrite:
         if (objc < 4) {
-            Tcl_WrongNumArgs(interp, 2, objv, "name args");
+            Tcl_WrongNumArgs(interp, 2, objv, "name line ?timestamp?");
             return TCL_ERROR;
         }
         logPtr = SyslogFind(srvPtr, Tcl_GetString(objv[2]));
@@ -824,7 +833,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
             break;
         }
         Ns_MutexLock(&logPtr->lock);
-        SyslogWrite(logPtr, Tcl_GetString(objv[3]));
+        SyslogWrite(logPtr, Tcl_GetString(objv[3]), objc > 4 ? Tcl_GetString(objv[4]) : NULL);
         Ns_MutexUnlock(&logPtr->lock);
         break;
 
@@ -838,7 +847,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
             break;
         }
         Ns_MutexLock(&logPtr->lock);
-        SyslogWrite(logPtr, 0);
+        SyslogWrite(logPtr, 0, 0);
         Ns_MutexUnlock(&logPtr->lock);
         break;
 
@@ -1125,14 +1134,18 @@ static void SyslogRollCallback(void *arg)
     }
 }
 
-static void SyslogWrite(SyslogFile * logPtr, char *str)
+static void SyslogWrite(SyslogFile * logPtr, char *line, char *timestamp)
 {
-    if (str) {
-        Ns_DStringAppend(&logPtr->buffer, str);
+    if (timestamp) {
+        Ns_DStringAppend(&logPtr->buffer, timestamp);
+        Ns_DStringAppend(&logPtr->buffer, " ");
+    }
+    if (line) {
+        Ns_DStringAppend(&logPtr->buffer, line);
         Ns_DStringAppend(&logPtr->buffer, "\n");
         logPtr->curlines++;
     }
-    if (!str || logPtr->curlines > logPtr->maxlines) {
+    if (!line || logPtr->curlines > logPtr->maxlines) {
         SyslogFlush(logPtr, &logPtr->buffer);
         logPtr->writtenlines += logPtr->curlines;
         logPtr->curlines = 0;
