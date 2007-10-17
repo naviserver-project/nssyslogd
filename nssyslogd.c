@@ -964,8 +964,6 @@ static SyslogFile *SyslogFindMap(SyslogServer * srvPtr, unsigned int facility, u
 {
     SyslogFile *logPtr;
 
-    Ns_Log(Notice, "find %p: %d/%d %d/%d", srvPtr, facility, maxFacility, severity, LOG_DEBUG);
-
     if (facility > maxFacility || severity > LOG_DEBUG) {
         return NULL;
     }
