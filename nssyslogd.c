@@ -351,7 +351,7 @@ static int SyslogSockProc(SOCKET sock, void *arg, int why)
     int len;
 
     if (why != NS_SOCK_READ) {
-        close(sock);
+        ns_sockclose(sock);
         return NS_FALSE;
     }
     len = SyslogRequestRead(server, sock, buffer, sizeof(buffer), &sa);
@@ -998,7 +998,7 @@ static int SyslogOpen(SyslogFile * logPtr)
         return NS_ERROR;
     }
     if (logPtr->fd > 0) {
-        close(logPtr->fd);
+        ns_sockclose(logPtr->fd);
     }
     logPtr->fd = fd;
     Ns_Log(Notice, "nssyslog: opened '%s'", logPtr->file);
@@ -1012,7 +1012,7 @@ static int SyslogClose(SyslogFile * logPtr)
 
     if (logPtr->fd > 0) {
         status = SyslogFlush(logPtr, &logPtr->buffer);
-        close(logPtr->fd);
+        ns_sockclose(logPtr->fd);
         logPtr->fd = -1;
         Ns_DStringFree(&logPtr->buffer);
         Ns_Log(Notice, "nssyslog: closed '%s'", logPtr->file);
@@ -1024,7 +1024,7 @@ static int SyslogClose(SyslogFile * logPtr)
 static void SyslogFree(SyslogFile * logPtr)
 {
     if (logPtr) {
-        close(logPtr->fd);
+        ns_sockclose(logPtr->fd);
         Ns_DStringFree(&logPtr->buffer);
         ns_free(logPtr->name);
         ns_free(logPtr->file);
@@ -1041,7 +1041,7 @@ static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr)
     if (len > 0) {
         if (logPtr->fd > 0 && write(logPtr->fd, buf, len) != len) {
             Ns_Log(Error, "nssyslog: %s: logging disabled: write() failed: '%s'", logPtr->name, strerror(errno));
-            close(logPtr->fd);
+            ns_sockclose(logPtr->fd);
             logPtr->fd = -1;
         }
         Ns_DStringTrunc(dsPtr, 0);
@@ -1242,7 +1242,7 @@ static void SyslogShutdown(void)
     SyslogTls *log = SyslogGetTls();
 
     if (log->sock != -1) {
-        close(log->sock);
+        ns_sockclose(log->sock);
     }
     log->sock = -1;
     log->connected = 0;
@@ -1333,6 +1333,6 @@ static void SyslogSendV(int severity, const char *fmt, va_list ap)
         cnt += 2;
         p = index(tbuf, '>') + 1;
         write(fd, p, cnt - (p - tbuf));
-        close(fd);
+        ns_sockclose(fd);
     }
 }
