@@ -85,7 +85,7 @@ typedef struct _syslogServer {
     char *address;
     int rollhour;
     int sock;
-    int opts;
+    int unixmode;
     int drivermode;
     int globalmode;
     short errors;
@@ -167,6 +167,18 @@ static Ns_ObjvTable syslogOptions[] = {
     { NULL,     0 }
 };
 
+/*
+ * Local functions defined in this file.
+ */
+
+static Ns_DriverListenProc Listen;
+static Ns_DriverAcceptProc Accept;
+static Ns_DriverRecvProc Recv;
+static Ns_DriverSendProc Send;
+static Ns_DriverSendFileProc SendFile;
+static Ns_DriverKeepProc Keep;
+static Ns_DriverCloseProc Close;
+
 static SyslogTls *SyslogGetTls(void);
 static void SyslogFreeTls(void *arg);
 static void SyslogInit(const char *path, const char *tag, int options, int facility);
@@ -190,7 +202,6 @@ static int SyslogRequestProc(void *arg, Ns_Conn *conn);
 static int SyslogRequestProcess(SyslogRequest *req);
 static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
 static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
-static Ns_DriverProc SyslogDriverProc;
 static Ns_SockProc SyslogSockProc;
 
 static Ns_Tls logTls;
@@ -246,18 +257,23 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         srvPtr->address = "/dev/log";
     }
     if (Ns_PathIsAbsolute(srvPtr->address)) {
-        srvPtr->opts = NS_DRIVER_UNIX;
+        srvPtr->unixmode = 1;
     }
 
     /* Configure Syslog listener */
     if (srvPtr->drivermode) {
-        init.version = NS_DRIVER_VERSION_1;
-        init.name = "nssyslog";
-        init.proc = SyslogDriverProc;
-        init.opts = NS_DRIVER_UDP|NS_DRIVER_QUEUE_ONREAD|NS_DRIVER_ASYNC;
-        init.opts |= srvPtr->opts;
+        init.version = NS_DRIVER_VERSION_2;
+        init.name = "nssyslogd";
+        init.listenProc = Listen;
+        init.acceptProc = Accept;
+        init.recvProc = Recv;
+        init.sendProc = Send;
+        init.sendFileProc = SendFile;
+        init.keepProc = Keep;
+        init.closeProc = Close;
+        init.opts = NS_DRIVER_ASYNC|NS_DRIVER_NOPARSE;
         init.arg = srvPtr;
-        init.path = NULL;
+        init.path = path;
 
         if (Ns_DriverInit(server, module, &init) != NS_OK) {
             Ns_Log(Error, "%s: driver init failed", module);
@@ -267,7 +283,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         Ns_RegisterRequest(server, "SYSLOG",  "/", SyslogRequestProc, NULL, srvPtr, 0);
 
     } else {
-        if (srvPtr->opts & NS_DRIVER_UNIX) {
+        if (srvPtr->unixmode) {
             srvPtr->sock = Ns_SockListenUnix(srvPtr->address, 0, 0666);
         } else {
             srvPtr->sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port);
@@ -303,6 +319,174 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     Ns_ScheduleDaily((Ns_SchedProc *) SyslogRollCallback, srvPtr, 0, srvPtr->rollhour, 0, NULL);
     Ns_TclRegisterTrace(server, SyslogInterpInit, srvPtr, NS_TCL_TRACE_CREATE);
     return NS_OK;
+}
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * Listen --
+ *
+ *      Open a listening socket in non-blocking mode.
+ *
+ * Results:
+ *      The open socket or INVALID_SOCKET on error.
+ *
+ * Side effects:
+ *      None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backlog)
+{
+    SOCKET sock;
+    SyslogServer *srvPtr = (SyslogServer*)driver->arg;
+
+    if (srvPtr->unixmode) {
+        sock = Ns_SockListenUnix(srvPtr->address, 0, 0666);
+    } else {
+        sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port);
+    }
+    if (sock != INVALID_SOCKET) {
+        (void) Ns_SockSetNonBlocking(sock);
+    }
+    return sock;
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * Accept --
+ *
+ *      Accept a new socket in non-blocking mode.
+ *
+ * Results:
+ *      NS_DRIVER_ACCEPT_DATA  - socket accepted, data present
+ *
+ * Side effects:
+ *      None.
+ *
+ *----------------------------------------------------------------------
+ */
+ 
+static NS_DRIVER_ACCEPT_STATUS Accept(Ns_Sock *sock, SOCKET listensock, struct sockaddr *sockaddrPtr, int *socklenPtr)
+{
+    sock->sock = listensock;
+    Ns_DriverSetRequest(sock, "SYSLOG / HTTP/1.0");
+    return NS_DRIVER_ACCEPT_DATA;
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * Recv --
+ *
+ *      Receive data into given buffers.
+ *
+ * Results:
+ *      Total number of bytes received or -1 on error or timeout.
+ *
+ * Side effects:
+ *      None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static ssize_t Recv(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, int flags)
+{
+    return recv(sock->sock, bufs->iov_base, bufs->iov_len - 1, 0);
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * Send --
+ *
+ *      Send data from given buffers.
+ *
+ * Results:
+ *      Total number of bytes sent or -1 on error or timeout.
+ *
+ * Side effects:
+ *      None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static ssize_t Send(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, int flags)
+{
+    return -1;
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * SendFile --
+ *
+ *      Send given file buffers directly to socket.
+ *
+ * Results:
+ *      Total number of bytes sent or -1 on error or timeout.
+ *
+ * Side effects:
+ *      May block once for driver sendwait timeout seconds if first
+ *      attempt would block.
+ *      May block 1 or more times due to disk IO.
+ *
+ *----------------------------------------------------------------------
+ */
+
+static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs, Ns_Time *timeoutPtr, int flags)
+{
+    return -1;
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * Keep --
+ *
+ *      Mo keepalives
+ *
+ * Results:
+ *      0, always.
+ *
+ * Side effects:
+ *      None.
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int Keep(Ns_Sock *sock)
+{
+    return 0;
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * Close --
+ *
+ *      Close the connection socket.
+ *
+ * Results:
+ *      None.
+ *
+ * Side effects:
+ *      Does not close UDP socket
+ *
+ *----------------------------------------------------------------------
+ */
+
+static void Close(Ns_Sock *sock)
+{
+    sock->sock = -1;
 }
 
 /*
@@ -361,48 +545,6 @@ static int SyslogSockProc(SOCKET sock, void *arg, int why)
         ns_free(req);
     }
     return NS_TRUE;
-}
-
-/*
- *----------------------------------------------------------------------
- *
- * SyslogDriverProc --
- *
- *	Driver callback to receive syslog events
- *
- * Results:
- *	NS_TRUE
- *
- * Side effects:
- *  	None
- *
- *----------------------------------------------------------------------
- */
-
-static int SyslogDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int nbufs)
-{
-    SyslogServer *server = (SyslogServer*)sock->driver->arg;
-
-    switch (cmd) {
-     case DriverQueue:
-
-         /*
-          *  Assign request line so our registered proc will be called
-          */
-
-         return Ns_DriverSetRequest(sock, "SYSLOG / SYSLOG/1.0");
-         break;
-
-     case DriverRecv:
-         return SyslogRequestRead(server, sock->sock, bufs->iov_base, bufs->iov_len, &sock->sa);
-         break;
-
-     case DriverSend:
-     case DriverKeep:
-     case DriverClose:
-         break;
-    }
-    return NS_ERROR;
 }
 
 /*
@@ -493,16 +635,16 @@ static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, in
     int len;
     socklen_t salen = sizeof(struct sockaddr_in);
 
-    if (server->opts & NS_DRIVER_UDP) {
-        len = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)sa, (socklen_t*)&salen);
-    } else {
+    if (server->unixmode) {
         sa->sin_addr.s_addr = inet_addr("127.0.0.1");
         len = recv(sock, buffer, size - 1, 0);
+    } else {
+        len = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)sa, (socklen_t*)&salen);
     }
     if (len <= 0) {
         if (errno && server->errors >= 0 && server->errors++ < 10) {
             Ns_Log(Error, "SyslogRequestRead: %d: %s recv error: %d bytes, %s",
-                   sock, server->opts & NS_DRIVER_UDP ? "udp" : "tcp", len, strerror(errno));
+                   sock, server->unixmode ? "tcp" : "udp", len, strerror(errno));
         }
         return NS_ERROR;
     }
