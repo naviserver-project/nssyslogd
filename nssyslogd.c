@@ -178,6 +178,7 @@ static Ns_DriverSendProc Send;
 static Ns_DriverSendFileProc SendFile;
 static Ns_DriverKeepProc Keep;
 static Ns_DriverCloseProc Close;
+static Ns_DriverRequestProc Request;
 
 static SyslogTls *SyslogGetTls(void);
 static void SyslogFreeTls(void *arg);
@@ -198,7 +199,6 @@ static void SyslogFree(SyslogFile * logPtr);
 static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc);
 static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
 static void SyslogRollCallback(void *arg);
-static int SyslogRequestProc(void *arg, Ns_Conn *conn);
 static int SyslogRequestProcess(SyslogRequest *req);
 static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
 static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
@@ -270,6 +270,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         init.sendProc = Send;
         init.sendFileProc = SendFile;
         init.keepProc = Keep;
+        init.requestProc = Request;
         init.closeProc = Close;
         init.opts = NS_DRIVER_ASYNC|NS_DRIVER_NOPARSE;
         init.arg = srvPtr;
@@ -280,7 +281,6 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
             ns_free(srvPtr);
             return NS_ERROR;
         }
-        Ns_RegisterRequest(server, "SYSLOG",  "/", SyslogRequestProc, NULL, srvPtr, 0);
 
     } else {
         if (srvPtr->unixmode) {
@@ -373,7 +373,6 @@ static SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backl
 static NS_DRIVER_ACCEPT_STATUS Accept(Ns_Sock *sock, SOCKET listensock, struct sockaddr *sockaddrPtr, int *socklenPtr)
 {
     sock->sock = listensock;
-    Ns_DriverSetRequest(sock, "SYSLOG / HTTP/1.0");
     return NS_DRIVER_ACCEPT_DATA;
 }
 
@@ -396,7 +395,9 @@ static NS_DRIVER_ACCEPT_STATUS Accept(Ns_Sock *sock, SOCKET listensock, struct s
 
 static ssize_t Recv(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, int flags)
 {
-    return recv(sock->sock, bufs->iov_base, bufs->iov_len - 1, 0);
+    socklen_t len = sizeof(sock->sa);
+
+    return recvfrom(sock->sock, bufs->iov_base, bufs->iov_len - 1, 0, (struct sockaddr*)&sock->sa, &len);
 }
 
 
@@ -465,6 +466,42 @@ static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs, Ns_Time *tim
 static int Keep(Ns_Sock *sock)
 {
     return 0;
+}
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * Request --
+ *
+ *	Request callback for processing syslog connections
+ *
+ * Results:
+ *	NS_TRUE
+ *
+ * Side effects:
+ *  	None
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int Request(void *arg, Ns_Conn *conn)
+{
+    Ns_DString *ds;
+    Ns_Sock *sockPtr;
+    SyslogRequest *req;
+    struct sockaddr_in sa;
+    SyslogServer *server = (SyslogServer*)arg;
+
+    ds = Ns_ConnSockContent(conn);
+    sockPtr = Ns_ConnSockPtr(conn);
+    sa = sockPtr->sa;
+
+    req = SyslogRequestCreate(server, sockPtr->sock, ds->string, ds->length, &sa);
+    if (req != NULL) {
+        SyslogRequestProcess(req);
+        ns_free(req);
+    }
+    return NS_FILTER_BREAK;
 }
 
 
@@ -545,42 +582,6 @@ static int SyslogSockProc(SOCKET sock, void *arg, int why)
         ns_free(req);
     }
     return NS_TRUE;
-}
-
-/*
- *----------------------------------------------------------------------
- *
- * SyslogRequestProc --
- *
- *	Request callback for processing syslog connections
- *
- * Results:
- *	NS_TRUE
- *
- * Side effects:
- *  	None
- *
- *----------------------------------------------------------------------
- */
-
-static int SyslogRequestProc(void *arg, Ns_Conn *conn)
-{
-    Ns_DString *ds;
-    Ns_Sock *sockPtr;
-    SyslogRequest *req;
-    struct sockaddr_in sa;
-    SyslogServer *server = (SyslogServer*)arg;
-
-    ds = Ns_ConnSockContent(conn);
-    sockPtr = Ns_ConnSockPtr(conn);
-    sa = sockPtr->sa;
-
-    req = SyslogRequestCreate(server, sockPtr->sock, ds->string, ds->length, &sa);
-    if (req != NULL) {
-        SyslogRequestProcess(req);
-        ns_free(req);
-    }
-    return NS_FILTER_BREAK;
 }
 
 /*
