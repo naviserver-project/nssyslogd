@@ -232,7 +232,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 {
     char *path;
     SyslogServer *srvPtr;
-    Ns_DriverInitData init;
+    Ns_DriverInitData init = {0};
     static int first = 0;
 
     if (!first) {
