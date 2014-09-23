@@ -393,7 +393,7 @@ static NS_DRIVER_ACCEPT_STATUS Accept(Ns_Sock *sock, SOCKET listensock, struct s
  *----------------------------------------------------------------------
  */
 
-static ssize_t Recv(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, int flags)
+static ssize_t Recv(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, unsigned int flags)
 {
     socklen_t len = sizeof(sock->sa);
 
@@ -417,7 +417,7 @@ static ssize_t Recv(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeo
  *----------------------------------------------------------------------
  */
 
-static ssize_t Send(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, int flags)
+static ssize_t Send(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, unsigned int flags)
 {
     return -1;
 }
@@ -441,7 +441,7 @@ static ssize_t Send(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeo
  *----------------------------------------------------------------------
  */
 
-static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs, Ns_Time *timeoutPtr, int flags)
+static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs, Ns_Time *timeoutPtr, unsigned int flags)
 {
     return -1;
 }
