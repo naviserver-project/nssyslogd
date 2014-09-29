@@ -563,7 +563,7 @@ static int SyslogInterpInit(Tcl_Interp * interp, void *arg)
  *----------------------------------------------------------------------
  */
 
-static int SyslogSockProc(SOCKET sock, void *arg, int why)
+static int SyslogSockProc(SOCKET sock, void *arg, unsigned int why)
 {
     SyslogServer *server = (SyslogServer*)arg;
     struct sockaddr_in sa;
