@@ -101,11 +101,11 @@ typedef struct _syslogRequest {
     struct sockaddr_in sa;
     struct {
       int code;
-      char *name;
+      const char *name;
     } facility;
     struct {
       int code;
-      char *name;
+      const char *name;
     } severity;
 } SyslogRequest;
 
@@ -315,7 +315,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         srvPtr->config = globalConfig;
     }
 
-    Ns_RegisterAtShutdown(SyslogCloseCallback, srvPtr);
+    Ns_RegisterAtShutdown((Ns_ShutdownProc*)SyslogCloseCallback, srvPtr);
     Ns_ScheduleDaily((Ns_SchedProc *) SyslogRollCallback, srvPtr, 0, srvPtr->rollhour, 0, NULL);
     Ns_TclRegisterTrace(server, SyslogInterpInit, srvPtr, NS_TCL_TRACE_CREATE);
     return NS_OK;
@@ -329,7 +329,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
  *      Open a listening socket in non-blocking mode.
  *
  * Results:
- *      The open socket or INVALID_SOCKET on error.
+ *      The open socket or NS_INVALID_SOCKET on error.
  *
  * Side effects:
  *      None
@@ -347,7 +347,7 @@ static SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backl
     } else {
         sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port);
     }
-    if (sock != INVALID_SOCKET) {
+    if (sock != NS_INVALID_SOCKET) {
         (void) Ns_SockSetNonBlocking(sock);
     }
     return sock;
@@ -370,7 +370,8 @@ static SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backl
  *----------------------------------------------------------------------
  */
  
-static NS_DRIVER_ACCEPT_STATUS Accept(Ns_Sock *sock, SOCKET listensock, struct sockaddr *sockaddrPtr, int *socklenPtr)
+static NS_DRIVER_ACCEPT_STATUS 
+Accept(Ns_Sock *sock, SOCKET listensock, struct sockaddr *sockaddrPtr, socklen_t *socklenPtr)
 {
     sock->sock = listensock;
     return NS_DRIVER_ACCEPT_DATA;
@@ -417,7 +418,8 @@ static ssize_t Recv(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeo
  *----------------------------------------------------------------------
  */
 
-static ssize_t Send(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeoutPtr, unsigned int flags)
+static ssize_t Send(Ns_Sock *sock, const struct iovec *bufs, int nbufs, 
+		    const Ns_Time *timeoutPtr, unsigned int flags)
 {
     return -1;
 }
