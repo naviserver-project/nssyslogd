@@ -80,9 +80,9 @@ typedef struct _syslogConfig {
 
 typedef struct _syslogServer {
     int port;
-    char *name;
-    char *proc;
-    char *address;
+    const char *name;
+    const char *proc;
+    const char *address;
     int rollhour;
     int sock;
     int unixmode;
