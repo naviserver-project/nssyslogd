@@ -115,7 +115,7 @@ typedef struct _syslogTls {
     int      connected;           /* have done connect */
     int      options;             /* status bits, set by openlog() */
     char     *tag;                /* string to tag the entry with */
-    char     *path;               /* path to socket or hostname */
+    const char *path;             /* path to socket or hostname */
     int      facility;            /* default facility code */
     int      severity;            /* default severity code */
 } SyslogTls;
@@ -186,7 +186,6 @@ static void SyslogInit(const char *path, const char *tag, int options, int facil
 static void SyslogShutdown(void);
 static void SyslogSend(int severity, const char *fmt, ...);
 static void SyslogSendV(int severity, const char *fmt, va_list ap);
-static int SyslogInterpInit(Tcl_Interp * interp, void *arg);
 static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[]);
 static SyslogFile *SyslogFind(SyslogServer * srvPtr, const char *name);
 static SyslogFile *SyslogFindMap(SyslogServer * srvPtr, unsigned int facility, unsigned int priority);
@@ -200,8 +199,10 @@ static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc);
 static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
 static void SyslogRollCallback(void *arg);
 static int SyslogRequestProcess(SyslogRequest *req);
-static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
+static int SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
+
+static Ns_TclTraceProc SyslogInterpInit;
 static Ns_SockProc SyslogSockProc;
 
 static Ns_Tls logTls;
@@ -230,7 +231,7 @@ NS_EXPORT int Ns_ModuleVersion = 1;
 
 NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 {
-    char *path;
+    const char *path;
     SyslogServer *srvPtr;
     Ns_DriverInitData init = {0};
     static int first = 0;
@@ -274,7 +275,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         init.closeProc = Close;
         init.opts = NS_DRIVER_ASYNC|NS_DRIVER_NOPARSE;
         init.arg = srvPtr;
-        init.path = path;
+        init.path = (char *)path;
 
         if (Ns_DriverInit(server, module, &init) != NS_OK) {
             Ns_Log(Error, "%s: driver init failed", module);
@@ -337,9 +338,9 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
  *----------------------------------------------------------------------
  */
 
-static SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backlog)
+static NS_SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backlog)
 {
-    SOCKET sock;
+    NS_SOCKET sock;
     SyslogServer *srvPtr = (SyslogServer*)driver->arg;
 
     if (srvPtr->unixmode) {
@@ -371,7 +372,7 @@ static SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backl
  */
  
 static NS_DRIVER_ACCEPT_STATUS 
-Accept(Ns_Sock *sock, SOCKET listensock, struct sockaddr *sockaddrPtr, socklen_t *socklenPtr)
+Accept(Ns_Sock *sock, NS_SOCKET listensock, struct sockaddr *sockaddrPtr, socklen_t *socklenPtr)
 {
     sock->sock = listensock;
     return NS_DRIVER_ACCEPT_DATA;
@@ -454,10 +455,10 @@ static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs, Ns_Time *tim
  *
  * Keep --
  *
- *      Mo keepalives
+ *      No keepalives
  *
  * Results:
- *      0, always.
+ *      NS_FALSE, always.
  *
  * Side effects:
  *      None.
@@ -465,9 +466,9 @@ static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs, Ns_Time *tim
  *----------------------------------------------------------------------
  */
 
-static int Keep(Ns_Sock *sock)
+static bool Keep(Ns_Sock *sock)
 {
-    return 0;
+    return NS_FALSE;
 }
 
 /*
@@ -543,9 +544,9 @@ static void Close(Ns_Sock *sock)
  *
  *----------------------------------------------------------------------
  */
-static int SyslogInterpInit(Tcl_Interp * interp, void *arg)
+static int SyslogInterpInit(Tcl_Interp * interp, const void *arg)
 {
-    Tcl_CreateObjCommand(interp, "ns_syslogd", SyslogCmd, arg, NULL);
+    Tcl_CreateObjCommand(interp, "ns_syslogd", SyslogCmd, (ClientData)arg, NULL);
     return NS_OK;
 }
 
@@ -565,7 +566,7 @@ static int SyslogInterpInit(Tcl_Interp * interp, void *arg)
  *----------------------------------------------------------------------
  */
 
-static int SyslogSockProc(SOCKET sock, void *arg, unsigned int why)
+static bool SyslogSockProc(NS_SOCKET sock, void *arg, unsigned int why)
 {
     SyslogServer *server = (SyslogServer*)arg;
     struct sockaddr_in sa;
@@ -602,7 +603,7 @@ static int SyslogSockProc(SOCKET sock, void *arg, unsigned int why)
  *----------------------------------------------------------------------
  */
 
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
 {
     if (buffer != NULL && size > 0) {
         SyslogRequest *req = ns_calloc(1, sizeof(SyslogRequest));
@@ -633,7 +634,7 @@ static SyslogRequest *SyslogRequestCreate(SyslogServer *server, SOCKET sock, cha
  *----------------------------------------------------------------------
  */
 
-static int SyslogRequestRead(SyslogServer *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
+static int SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
 {
     int len;
     socklen_t salen = sizeof(struct sockaddr_in);
@@ -727,7 +728,7 @@ static int SyslogRequestProcess(SyslogRequest *req)
             Ns_TlsSet(&reqTls, req);
             rc = Tcl_EvalEx(interp, srvPtr->proc, -1, 0);
             if (rc != TCL_OK) {
-                Ns_TclLogError(interp);
+	      	(void) Ns_TclLogErrorInfo(interp, "\n(context: syslogd eval)");
             } else {
                 char *res = (char *) Tcl_GetStringResult(interp);
                 if (res && *res) {
@@ -1319,7 +1320,7 @@ static void SyslogFreeTls(void *arg)
     SyslogTls *log = (SyslogTls*)arg;
 
     ns_free(log->tag);
-    ns_free(log->path);
+    ns_free((char *)log->path);
     ns_free(log);
 }
 
@@ -1329,7 +1330,7 @@ static void SyslogInit(const char *path, const char *tag, int options, int facil
     int changed = 0;
 
     if (path != NULL && strcmp(path, log->path)) {
-        ns_free(log->path);
+        ns_free((char *)log->path);
         log->path = ns_strdup(path);
         changed = 1;
     }

@@ -10,7 +10,7 @@ MOD      =  nssyslogd.so
 #
 # Objects to build.
 #
-OBJS     = nssyslogd.o
+MODOBJS     = nssyslogd.o
 
 PROCS   = syslogd_procs.tcl
 
