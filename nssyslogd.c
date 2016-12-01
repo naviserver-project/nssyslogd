@@ -60,8 +60,8 @@ typedef struct _syslogFile {
     char *rollfmt;
     int fd;
     int maxbackup;
-    int maxlines;
-    int curlines;
+    unsigned long maxlines;
+    unsigned long curlines;
     unsigned long writtenlines;
     Ns_Mutex lock;
     Ns_DString buffer;
@@ -79,39 +79,39 @@ typedef struct _syslogConfig {
 } SyslogConfig;
 
 typedef struct _syslogServer {
-    int port;
+    unsigned short port;
     const char *name;
     const char *proc;
     const char *address;
     int rollhour;
     int sock;
     int unixmode;
-    int drivermode;
-    int globalmode;
+    bool drivermode;
+    bool globalmode;
     short errors;
     SyslogConfig *config;
 } SyslogServer;
 
 typedef struct _syslogRequest {
     SyslogServer *server;
-    int size;
+    size_t size;
     char *line;
     char *buffer;
     char *timestamp;
-    struct sockaddr_in sa;
+    struct sockaddr_storage sa;
     struct {
-      int code;
+      unsigned int code;
       const char *name;
     } facility;
     struct {
-      int code;
+      unsigned int code;
       const char *name;
     } severity;
 } SyslogRequest;
 
 typedef struct _syslogTls {
     int      sock;                /* fd for log */
-    int      port;                /* port for remote syslog */
+    unsigned short port;                /* port for remote syslog */
     int      connected;           /* have done connect */
     int      options;             /* status bits, set by openlog() */
     char     *tag;                /* string to tag the entry with */
@@ -199,15 +199,15 @@ static void SyslogCallback(int (proc) (SyslogFile *), void *arg, char *desc);
 static void SyslogCloseCallback(Ns_Time * toPtr, void *arg);
 static void SyslogRollCallback(void *arg);
 static int SyslogRequestProcess(SyslogRequest *req);
-static int SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
+static ssize_t SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer, size_t size, struct sockaddr *saPtr);
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, char *buffer, size_t size, struct sockaddr *saPtr);
 
 static Ns_TclTraceProc SyslogInterpInit;
 static Ns_SockProc SyslogSockProc;
 
 static Ns_Tls logTls;
 static Ns_Tls reqTls;
-static int maxFacility = 0;
+static unsigned int maxFacility = 0u;
 static SyslogConfig *globalConfig = NULL;
 
 NS_EXPORT int Ns_ModuleVersion = 1;
@@ -229,7 +229,7 @@ NS_EXPORT int Ns_ModuleVersion = 1;
  *----------------------------------------------------------------------
  */
 
-NS_EXPORT int Ns_ModuleInit(char *server, char *module)
+NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
 {
     const char *path;
     SyslogServer *srvPtr;
@@ -248,7 +248,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     path = Ns_ConfigGetPath(server, module, NULL);
     srvPtr = (SyslogServer *) ns_calloc(1, sizeof(SyslogServer));
     srvPtr->name = server;
-    srvPtr->port = Ns_ConfigIntRange(path, "port", 514, 1, 65535);
+    srvPtr->port = (unsigned short)Ns_ConfigIntRange(path, "port", 514, 1, 65535);
     srvPtr->proc = Ns_ConfigGetValue(path, "proc");
     srvPtr->rollhour = Ns_ConfigIntRange(path, "rollhour", 0, 0, 23);
     srvPtr->address = Ns_ConfigGetValue(path, "address");
@@ -338,7 +338,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
  *----------------------------------------------------------------------
  */
 
-static NS_SOCKET Listen(Ns_Driver *driver, CONST char *address, int port, int backlog)
+static NS_SOCKET Listen(Ns_Driver *driver, CONST char *address, unsigned short port, int backlog, bool reusePort)
 {
     NS_SOCKET sock;
     SyslogServer *srvPtr = (SyslogServer*)driver->arg;
@@ -492,14 +492,14 @@ static int Request(void *arg, Ns_Conn *conn)
     Ns_DString *ds;
     Ns_Sock *sockPtr;
     SyslogRequest *req;
-    struct sockaddr_in sa;
+    struct sockaddr_storage sa;
     SyslogServer *server = (SyslogServer*)arg;
 
     ds = Ns_ConnSockContent(conn);
     sockPtr = Ns_ConnSockPtr(conn);
     sa = sockPtr->sa;
 
-    req = SyslogRequestCreate(server, sockPtr->sock, ds->string, ds->length, &sa);
+    req = SyslogRequestCreate(server, sockPtr->sock, ds->string, (size_t)ds->length, (struct sockaddr *)&sa);
     if (req != NULL) {
         SyslogRequestProcess(req);
         ns_free(req);
@@ -569,17 +569,17 @@ static int SyslogInterpInit(Tcl_Interp * interp, const void *arg)
 static bool SyslogSockProc(NS_SOCKET sock, void *arg, unsigned int why)
 {
     SyslogServer *server = (SyslogServer*)arg;
-    struct sockaddr_in sa;
+    struct sockaddr_storage sa;
     SyslogRequest *req;
     char buffer[2048];
-    int len;
+    ssize_t len;
 
     if (why != NS_SOCK_READ) {
         ns_sockclose(sock);
         return NS_FALSE;
     }
-    len = SyslogRequestRead(server, sock, buffer, sizeof(buffer), &sa);
-    req = SyslogRequestCreate(server, sock, buffer, len, &sa);
+    len = SyslogRequestRead(server, sock, buffer, sizeof(buffer), (struct sockaddr *)&sa);
+    req = SyslogRequestCreate(server, sock, buffer, (size_t)len, (struct sockaddr *)&sa);
     if (req != NULL) {
         SyslogRequestProcess(req);
         ns_free(req);
@@ -603,14 +603,14 @@ static bool SyslogSockProc(NS_SOCKET sock, void *arg, unsigned int why)
  *----------------------------------------------------------------------
  */
 
-static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
+static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, char *buffer, size_t size, struct sockaddr *saPtr)
 {
     if (buffer != NULL && size > 0) {
         SyslogRequest *req = ns_calloc(1, sizeof(SyslogRequest));
         req->server = server;
         req->buffer = buffer;
         req->size = size;
-        req->sa = *sa;
+        req->sa = *(struct sockaddr_storage *)saPtr;
         req->severity.name = "none";
         req->facility.name = "none";
         return req;
@@ -634,21 +634,21 @@ static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, 
  *----------------------------------------------------------------------
  */
 
-static int SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
+static ssize_t SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer, size_t size, struct sockaddr *saPtr)
 {
-    int len;
+    ssize_t len;
     socklen_t salen = sizeof(struct sockaddr_in);
 
     if (server->unixmode) {
-        sa->sin_addr.s_addr = inet_addr("127.0.0.1");
+        ns_inet_pton(saPtr, NS_IP_LOOPBACK);
         len = recv(sock, buffer, size - 1, 0);
     } else {
-        len = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)sa, (socklen_t*)&salen);
+        len = recvfrom(sock, buffer, size - 1, 0, saPtr, (socklen_t*)&salen);
     }
     if (len <= 0) {
         if (errno && server->errors >= 0 && server->errors++ < 10) {
             Ns_Log(Error, "SyslogRequestRead: %d: %s recv error: %d bytes, %s",
-                   sock, server->unixmode ? "tcp" : "udp", len, strerror(errno));
+                   sock, server->unixmode ? "tcp" : "udp", (int)len, strerror(errno));
         }
         return NS_ERROR;
     }
@@ -675,7 +675,8 @@ static int SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer,
 static int SyslogRequestProcess(SyslogRequest *req)
 {
     SyslogServer *srvPtr = req->server;
-    int i, rc, priority = -1;
+    int rc, priority = -1;
+    size_t i;
 
     req->line = req->buffer;
     /* Parse priority */
@@ -689,7 +690,7 @@ static int SyslogRequestProcess(SyslogRequest *req)
         }
         req->line++;
     }
-    req->facility.code = LOG_FAC(priority)<<3;
+    req->facility.code = ((unsigned int)LOG_FAC(priority)) << 3;
     req->severity.code = LOG_PRI(priority);
     /* Parse timestamp: Mon dd hh:mm:ss */
     req->timestamp = req->line;
@@ -700,17 +701,17 @@ static int SyslogRequestProcess(SyslogRequest *req)
     if (!*req->line) {
         return NS_TRUE;
     }
-    for (i = strlen(req->line) - 1; i > 0 && isspace(req->line[i]); i--) {
+    for (i = strlen(req->line) - 1u; i > 0 && isspace(req->line[i]); i--) {
         req->line[i] = 0;
     }
     /* Format the message */
-    for (i = 0; syslogFacilities[i].key; i++) {
+    for (i = 0u; syslogFacilities[i].key; i++) {
         if (req->facility.code == syslogFacilities[i].value) {
             req->facility.name = syslogFacilities[i].key;
             break;
         }
     }
-    for (i = 0; syslogSeverities[i].key; i++) {
+    for (i = 0u; syslogSeverities[i].key; i++) {
         if (req->severity.code == syslogSeverities[i].value) {
             req->severity.name = syslogSeverities[i].key;
             break;
@@ -838,7 +839,8 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         if (str != NULL) {
             CONST char **argv;
             char *fname, *sname;
-            int argc, ok, fmax, fcode, scode;
+            int argc, ok;
+            int fmax, fcode, scode;
 
             /*
              *  map is a list of facility[.severity] codes that apply to this
@@ -875,7 +877,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
                      if (sname == fname) {
                          fname = NULL;
                          fcode = 0;
-                         fmax = maxFacility;
+                         fmax = (int)maxFacility;
                      }
                      *sname++ = 0;
                      if (!strcasecmp(sname, "none")) {
@@ -888,14 +890,14 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
 
                  for (j = 0; fname && syslogFacilities[j].key; j++) {
                      if (!strcasecmp(fname, syslogFacilities[j].key)) {
-                         fmax = fcode = syslogFacilities[j].value;
+                         fmax = fcode = (int)syslogFacilities[j].value;
                          fmax++;
                          break;
                      }
                  }
                  for (j = 0; sname && syslogSeverities[j].key; j++) {
                      if (!strcasecmp(sname, syslogSeverities[j].key)) {
-                         scode = syslogSeverities[j].value;
+                         scode = (int)syslogSeverities[j].value;
                          break;
                      }
                  }
@@ -912,7 +914,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
 
                  while (fcode <= fmax) {
                      for (j = 0; j <= scode; j++) {
-                         logPtr->map.flags[fcode][j] = ok;
+                         logPtr->map.flags[fcode][j] = (char)ok;
                      }
                      fcode++;
                  }
@@ -960,7 +962,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
             Ns_DString ds;
             Ns_DStringInit(&ds);
             Ns_MutexLock(&logPtr->lock);
-            Ns_DStringPrintf(&ds, "%s %s %d %d {%s} %lu", logPtr->name, logPtr->file,
+            Ns_DStringPrintf(&ds, "%s %s %d %lu {%s} %lu", logPtr->name, logPtr->file,
                              logPtr->maxbackup, logPtr->maxlines,
                              logPtr->rollfmt ? logPtr->rollfmt : "", logPtr->writtenlines);
             Ns_MutexUnlock(&logPtr->lock);
@@ -1072,14 +1074,14 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         strPtr = Tcl_NewObj();
         switch (cmd) {
         case reqArray:
-            Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(ns_inet_ntoa(req->sa.sin_addr), -1));
+            Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(ns_inet_ntoa((struct sockaddr *)&req->sa), -1));
             Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(req->facility.name, -1));
             Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(req->severity.name, -1));
             Tcl_ListObjAppendElement(interp, strPtr, Tcl_NewStringObj(req->line, -1));
             break;
 
         case reqPeeraddr:
-            Tcl_SetStringObj(strPtr, ns_inet_ntoa(req->sa.sin_addr), -1);
+            Tcl_SetStringObj(strPtr, ns_inet_ntoa((struct sockaddr *)&req->sa), -1);
             break;
 
         case reqFacility:
@@ -1185,7 +1187,7 @@ static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr)
     char *buf = dsPtr->string;
 
     if (len > 0) {
-        if (logPtr->fd > 0 && write(logPtr->fd, buf, len) != len) {
+        if (logPtr->fd > 0 && write(logPtr->fd, buf, (size_t)len) != len) {
             Ns_Log(Error, "nssyslog: %s: logging disabled: write() failed: '%s'", logPtr->name, strerror(errno));
             ns_sockclose(logPtr->fd);
             logPtr->fd = -1;
@@ -1354,29 +1356,32 @@ static void SyslogInit(const char *path, const char *tag, int options, int facil
     if (log->sock == -1) {
         if (Ns_PathIsAbsolute(log->path)) {
             struct sockaddr un;
+            
             un.sa_family = AF_UNIX;
             strncpy(un.sa_data, log->path, sizeof(un.sa_data));
             if (log->options & LOG_NDELAY) {
                 log->sock = socket(AF_UNIX, SOCK_DGRAM, 0);
             }
             if (log->sock != -1 && !log->connected &&
-                connect(log->sock, &un, sizeof(un.sa_family)+strlen(un.sa_data)) != -1) {
+                connect(log->sock, &un, (socklen_t)(sizeof(un.sa_family)+strlen(un.sa_data))) != -1) {
                 log->connected = 1;
             }
         } else {
-            struct sockaddr_in sa;
+            struct NS_SOCKADDR_STORAGE sa;
+            struct sockaddr           *saPtr = (struct sockaddr *)&sa;
             char *ptr = strchr(log->path, ':');
+            
             if (ptr != NULL) {
                 *ptr++ = 0;
-                log->port = atoi(ptr);
+                log->port = (unsigned short)strtol(ptr, NULL, 10);
             }
-            if (Ns_GetSockAddr(&sa, log->path, log->port) == NS_OK) {
+            if (Ns_GetSockAddr(saPtr, log->path, log->port) == NS_OK) {
                 if (log->options & LOG_NDELAY) {
                     log->sock = socket(AF_INET, SOCK_DGRAM, 0);
                 }
             }
             if (log->sock != -1 && !log->connected &&
-                connect(log->sock, (struct sockaddr*)&sa, sizeof(sa)) != -1) {
+                (connect(log->sock, saPtr, Ns_SockaddrGetSockLen(saPtr)) != -1)) {
                 log->connected = 1;
             }
         }
@@ -1407,7 +1412,8 @@ static void SyslogSendV(int severity, const char *fmt, va_list ap)
 {
     SyslogTls *log = SyslogGetTls();
     time_t now = time(NULL);
-    int cnt, fd, saved_errno = errno;
+    int fd, saved_errno = errno;
+    size_t cnt;
     char tbuf[2048], fmt2[1024], *p = tbuf, *stdp = NULL, ch, *t1, *t2;
 
     if (severity == -1) {
@@ -1462,7 +1468,7 @@ static void SyslogSendV(int severity, const char *fmt, va_list ap)
         struct iovec *v = iov;
 
         v->iov_base = stdp;
-        v->iov_len = cnt - (stdp - tbuf);
+        v->iov_len = cnt - (size_t)(stdp - tbuf);
         ++v;
         v->iov_base = "\n";
         v->iov_len = 1;
@@ -1478,7 +1484,16 @@ static void SyslogSendV(int severity, const char *fmt, va_list ap)
         strcat(tbuf, "\r\n");
         cnt += 2;
         p = index(tbuf, '>') + 1;
-        write(fd, p, cnt - (p - tbuf));
+        write(fd, p, cnt - (size_t)(p - tbuf));
         ns_sockclose(fd);
     }
 }
+
+/*
+ * Local Variables:
+ * mode: c
+ * c-basic-offset: 4
+ * fill-column: 78
+ * indent-tabs-mode: nil
+ * End:
+ */
