@@ -287,7 +287,7 @@ NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
         if (srvPtr->unixmode) {
             srvPtr->sock = Ns_SockListenUnix(srvPtr->address, 0, 0666);
         } else {
-            srvPtr->sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port);
+            srvPtr->sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port, NS_FALSE);
         }
         if (srvPtr->sock == -1) {
             Ns_Log(Error, "nssyslogd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
@@ -346,7 +346,7 @@ static NS_SOCKET Listen(Ns_Driver *driver, CONST char *address, unsigned short p
     if (srvPtr->unixmode) {
         sock = Ns_SockListenUnix(srvPtr->address, 0, 0666);
     } else {
-        sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port);
+        sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port, NS_FALSE);
     }
     if (sock != NS_INVALID_SOCKET) {
         (void) Ns_SockSetNonBlocking(sock);
