@@ -1192,7 +1192,7 @@ static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr)
             ns_sockclose(logPtr->fd);
             logPtr->fd = -1;
         }
-        Ns_DStringTrunc(dsPtr, 0);
+        Ns_DStringSetLength(dsPtr, 0);
     }
     return (logPtr->fd == -1) ? NS_ERROR : NS_OK;
 }
