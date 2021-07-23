@@ -229,7 +229,7 @@ NS_EXPORT int Ns_ModuleVersion = 1;
  *----------------------------------------------------------------------
  */
 
-NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
+NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
 {
     const char *path;
     SyslogServer *srvPtr;
@@ -537,14 +537,14 @@ static void Close(Ns_Sock *sock)
  *      Add ns_snmp commands to interp.
  *
  * Results:
- *      None.
+ *      Ns_ReturnCode.
  *
  * Side effects:
  *      None.
  *
  *----------------------------------------------------------------------
  */
-static int SyslogInterpInit(Tcl_Interp * interp, const void *arg)
+static Ns_ReturnCode SyslogInterpInit(Tcl_Interp * interp, const void *arg)
 {
     Tcl_CreateObjCommand(interp, "ns_syslogd", SyslogCmd, (ClientData)arg, NULL);
     return NS_OK;
@@ -1420,7 +1420,7 @@ static void SyslogSendV(int severity, const char *fmt, va_list ap)
         severity = log->severity;
     }
     /* see if we should just throw out this message */
-    if (!LOG_MASK(LOG_PRI(severity)) || (severity &~ (LOG_PRIMASK|LOG_FACMASK))) {
+    if ((LOG_MASK(LOG_PRI(severity)) == 0) || (severity &~ (LOG_PRIMASK|LOG_FACMASK))) {
         return;
     }
     if (log->sock < 0 || !log->connected) {
