@@ -202,6 +202,8 @@ static int SyslogRequestProcess(SyslogRequest *req);
 static ssize_t SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buffer, size_t size, struct sockaddr *saPtr);
 static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, char *buffer, size_t size, struct sockaddr *saPtr);
 
+
+NS_EXPORT Ns_ModuleInitProc Ns_ModuleInit;
 static Ns_TclTraceProc SyslogInterpInit;
 static Ns_SockProc SyslogSockProc;
 
@@ -370,8 +372,8 @@ static NS_SOCKET Listen(Ns_Driver *driver, CONST char *address, unsigned short p
  *
  *----------------------------------------------------------------------
  */
- 
-static NS_DRIVER_ACCEPT_STATUS 
+
+static NS_DRIVER_ACCEPT_STATUS
 Accept(Ns_Sock *sock, NS_SOCKET listensock, struct sockaddr *sockaddrPtr, socklen_t *socklenPtr)
 {
     sock->sock = listensock;
@@ -419,8 +421,11 @@ static ssize_t Recv(Ns_Sock *sock, struct iovec *bufs, int nbufs, Ns_Time *timeo
  *----------------------------------------------------------------------
  */
 
-static ssize_t Send(Ns_Sock *sock, const struct iovec *bufs, int nbufs, 
-		    const Ns_Time *timeoutPtr, unsigned int flags)
+static ssize_t Send(Ns_Sock *sock, const struct iovec *bufs, int nbufs,
+#if NS_MAJOR_VERSION < 5
+                    const Ns_Time *timeoutPtr,
+#endif
+                    unsigned int flags)
 {
     return -1;
 }
@@ -444,7 +449,11 @@ static ssize_t Send(Ns_Sock *sock, const struct iovec *bufs, int nbufs,
  *----------------------------------------------------------------------
  */
 
-static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs, Ns_Time *timeoutPtr, unsigned int flags)
+static ssize_t SendFile(Ns_Sock *sock, Ns_FileVec *bufs, int nbufs,
+#if NS_MAJOR_VERSION < 5
+                        Ns_Time *timeoutPtr,
+#endif
+                        unsigned int flags)
 {
     return -1;
 }
@@ -482,7 +491,7 @@ static bool Keep(Ns_Sock *sock)
  *	NS_TRUE
  *
  * Side effects:
- *  	None
+ *      None
  *
  *----------------------------------------------------------------------
  */
@@ -561,7 +570,7 @@ static Ns_ReturnCode SyslogInterpInit(Tcl_Interp * interp, const void *arg)
  *	NS_TRUE
  *
  * Side effects:
- *  	None
+ *      None
  *
  *----------------------------------------------------------------------
  */
@@ -598,7 +607,7 @@ static bool SyslogSockProc(NS_SOCKET sock, void *arg, unsigned int why)
  *	NS_TRUE
  *
  * Side effects:
- *  	None
+ *      None
  *
  *----------------------------------------------------------------------
  */
@@ -629,7 +638,7 @@ static SyslogRequest *SyslogRequestCreate(SyslogServer *server, NS_SOCKET sock, 
  *	NS_TRUE
  *
  * Side effects:
- *  	None
+ *      None
  *
  *----------------------------------------------------------------------
  */
@@ -667,7 +676,7 @@ static ssize_t SyslogRequestRead(SyslogServer *server, NS_SOCKET sock, char *buf
  *	NS_TRUE
  *
  * Side effects:
- *  	None
+ *      None
  *
  *----------------------------------------------------------------------
  */
@@ -729,7 +738,7 @@ static int SyslogRequestProcess(SyslogRequest *req)
             Ns_TlsSet(&reqTls, req);
             rc = Tcl_EvalEx(interp, srvPtr->proc, -1, 0);
             if (rc != TCL_OK) {
-	      	(void) Ns_TclLogErrorInfo(interp, "\n(context: syslogd eval)");
+                (void) Ns_TclLogErrorInfo(interp, "\n(context: syslogd eval)");
             } else {
                 char *res = (char *) Tcl_GetStringResult(interp);
                 if (res && *res) {
@@ -1356,7 +1365,7 @@ static void SyslogInit(const char *path, const char *tag, int options, int facil
     if (log->sock == -1) {
         if (Ns_PathIsAbsolute(log->path)) {
             struct sockaddr un;
-            
+
             un.sa_family = AF_UNIX;
             strncpy(un.sa_data, log->path, sizeof(un.sa_data));
             if (log->options & LOG_NDELAY) {
@@ -1370,7 +1379,7 @@ static void SyslogInit(const char *path, const char *tag, int options, int facil
             struct NS_SOCKADDR_STORAGE sa;
             struct sockaddr           *saPtr = (struct sockaddr *)&sa;
             char *ptr = strchr(log->path, ':');
-            
+
             if (ptr != NULL) {
                 *ptr++ = 0;
                 log->port = (unsigned short)strtol(ptr, NULL, 10);
