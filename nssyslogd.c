@@ -64,7 +64,7 @@ typedef struct _syslogFile {
     unsigned long curlines;
     unsigned long writtenlines;
     Ns_Mutex lock;
-    Ns_DString buffer;
+    Tcl_DString buffer;
     struct {
       char *string;
       char flags[LOG_NFACILITIES][LOG_DEBUG];
@@ -73,7 +73,7 @@ typedef struct _syslogFile {
 
 typedef struct _syslogConfig {
     Ns_Mutex mutex;
-    Ns_DString buffer;
+    Tcl_DString buffer;
     SyslogFile *files;
     short maps;
 } SyslogConfig;
@@ -191,7 +191,7 @@ static SyslogFile *SyslogFind(SyslogServer * srvPtr, const char *name);
 static SyslogFile *SyslogFindMap(SyslogServer * srvPtr, unsigned int facility, unsigned int priority);
 static int SyslogOpen(SyslogFile * logPtr);
 static int SyslogClose(SyslogFile * logPtr);
-static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr);
+static int SyslogFlush(SyslogFile * logPtr, Tcl_DString * dsPtr);
 static int SyslogRoll(SyslogFile * logPtr);
 static void SyslogWrite(SyslogFile * logPtr, char *line, char *timestamp);
 static void SyslogFree(SyslogFile * logPtr);
@@ -309,7 +309,7 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
 
     if (!srvPtr->globalmode || !globalConfig) {
         srvPtr->config = ns_calloc(1, sizeof(SyslogConfig));
-        Ns_DStringInit(&srvPtr->config->buffer);
+        Tcl_DStringInit(&srvPtr->config->buffer);
     }
     if (!globalConfig) {
         globalConfig = srvPtr->config;
@@ -498,7 +498,7 @@ static bool Keep(Ns_Sock *sock)
 
 static int Request(void *arg, Ns_Conn *conn)
 {
-    Ns_DString *ds;
+    Tcl_DString *ds;
     Ns_Sock *sockPtr;
     SyslogRequest *req;
     struct sockaddr_storage sa;
@@ -931,7 +931,7 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
             Tcl_Free((char *)argv);
         }
 
-        Ns_DStringInit(&logPtr->buffer);
+        Tcl_DStringInit(&logPtr->buffer);
         logPtr->name = ns_strdup(logPtr->name);
         logPtr->file = ns_strdup(logPtr->file);
         logPtr->rollfmt = ns_strcopy(logPtr->rollfmt);
@@ -968,15 +968,15 @@ static int SyslogCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CO
         }
         logPtr = SyslogFind(srvPtr, Tcl_GetString(objv[2]));
         if (logPtr) {
-            Ns_DString ds;
-            Ns_DStringInit(&ds);
+            Tcl_DString ds;
+            Tcl_DStringInit(&ds);
             Ns_MutexLock(&logPtr->lock);
             Ns_DStringPrintf(&ds, "%s %s %d %lu {%s} %lu", logPtr->name, logPtr->file,
                              logPtr->maxbackup, logPtr->maxlines,
                              logPtr->rollfmt ? logPtr->rollfmt : "", logPtr->writtenlines);
             Ns_MutexUnlock(&logPtr->lock);
             Tcl_AppendResult(interp, ds.string, 0);
-            Ns_DStringFree(&ds);
+            Tcl_DStringFree(&ds);
         }
         break;
 
@@ -1171,7 +1171,7 @@ static int SyslogClose(SyslogFile * logPtr)
         status = SyslogFlush(logPtr, &logPtr->buffer);
         ns_sockclose(logPtr->fd);
         logPtr->fd = -1;
-        Ns_DStringFree(&logPtr->buffer);
+        Tcl_DStringFree(&logPtr->buffer);
         Ns_Log(Notice, "nssyslog: closed '%s'", logPtr->file);
     }
 
@@ -1182,7 +1182,7 @@ static void SyslogFree(SyslogFile * logPtr)
 {
     if (logPtr) {
         ns_sockclose(logPtr->fd);
-        Ns_DStringFree(&logPtr->buffer);
+        Tcl_DStringFree(&logPtr->buffer);
         ns_free(logPtr->name);
         ns_free(logPtr->file);
         ns_free(logPtr->rollfmt);
@@ -1190,7 +1190,7 @@ static void SyslogFree(SyslogFile * logPtr)
     }
 }
 
-static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr)
+static int SyslogFlush(SyslogFile * logPtr, Tcl_DString * dsPtr)
 {
     int len = dsPtr->length;
     char *buf = dsPtr->string;
@@ -1201,7 +1201,7 @@ static int SyslogFlush(SyslogFile * logPtr, Ns_DString * dsPtr)
             ns_sockclose(logPtr->fd);
             logPtr->fd = -1;
         }
-        Ns_DStringSetLength(dsPtr, 0);
+        Tcl_DStringSetLength(dsPtr, 0);
     }
     return (logPtr->fd == -1) ? NS_ERROR : NS_OK;
 }
@@ -1227,11 +1227,11 @@ static int SyslogRoll(SyslogFile * logPtr)
         } else {
             time_t now = time(0);
             char timeBuf[512];
-            Ns_DString ds;
+            Tcl_DString ds;
             struct tm *ptm = ns_localtime(&now);
 
             strftime(timeBuf, sizeof(timeBuf) - 1, logPtr->rollfmt, ptm);
-            Ns_DStringInit(&ds);
+            Tcl_DStringInit(&ds);
             Ns_DStringVarAppend(&ds, logPtr->file, ".", timeBuf, NULL);
             newpath = Tcl_NewStringObj(ds.string, -1);
             Tcl_IncrRefCount(newpath);
@@ -1247,7 +1247,7 @@ static int SyslogRoll(SyslogFile * logPtr)
                 status = NS_ERROR;
             }
             Tcl_DecrRefCount(newpath);
-            Ns_DStringFree(&ds);
+            Tcl_DStringFree(&ds);
             if (status == NS_OK) {
                 status = Ns_PurgeFiles(logPtr->file, logPtr->maxbackup);
             }
@@ -1294,12 +1294,12 @@ static void SyslogRollCallback(void *arg)
 static void SyslogWrite(SyslogFile * logPtr, char *line, char *timestamp)
 {
     if (timestamp) {
-        Ns_DStringAppend(&logPtr->buffer, timestamp);
-        Ns_DStringAppend(&logPtr->buffer, " ");
+        Tcl_DStringAppend(&logPtr->buffer, timestamp, TCL_INDEX_NONE);
+        Tcl_DStringAppend(&logPtr->buffer, " ", TCL_INDEX_NONE);
     }
     if (line) {
-        Ns_DStringAppend(&logPtr->buffer, line);
-        Ns_DStringAppend(&logPtr->buffer, "\n");
+        Tcl_DStringAppend(&logPtr->buffer, line, TCL_INDEX_NONE);
+        Tcl_DStringAppend(&logPtr->buffer, "\n", TCL_INDEX_NONE);
         logPtr->curlines++;
     }
     if (!line || logPtr->curlines > logPtr->maxlines) {
